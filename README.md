@@ -36,10 +36,20 @@ docker compose down        # add -v to drop the Postgres, Prometheus and Grafana
 ```
 
 Starts margit on `localhost:8080` backed by a Postgres container, plus Prometheus
-(`localhost:9090`, scrapes `/metrics` every 5s) and Grafana (`localhost:3000`, admin/admin;
-anonymous users can view). Grafana opens on the provisioned **Margit** dashboard: request rate by
-route and status, errors, check decisions, p50/p95/p99 latency, and CPU/memory against the
-container budget.
+(`localhost:9090`, scrapes every 5s) and Grafana (`localhost:3000`, admin/admin; anonymous users can
+view). Grafana opens on the provisioned **Margit** dashboard:
+
+| Row | Panels | Source |
+|---|---|---|
+| Overview, Traffic, Latency | request rate by route/status, errors, check decisions, p50/p95/p99 | margit `/metrics` |
+| Container budget | margit CPU, memory, goroutines/GC | margit `/metrics` |
+| Containers | CPU cores, memory working set and % of limit per compose service | cAdvisor |
+| Postgres | connections (total, by state), active queries, transactions/s, statements/s and mean latency per statement, buffer cache hit ratio, blocks hit/read per second, block read time, rows/s, DB size | postgres-exporter + `pg_stat_statements` |
+
+Per-statement metrics (`margit_statements_*`, labelled by normalized SQL text) come from the custom
+exporter query in `docker/postgres/exporter-queries.yml`. `pg_stat_statements` is preloaded by the
+compose command and created by `docker/postgres/init.sql` on a fresh volume (on an existing volume
+run `CREATE EXTENSION pg_stat_statements` once).
 
 The margit container is limited to
 1 CPU and 1 GiB memory (no swap), with `GOMAXPROCS=1` and `GOMEMLIMIT=900MiB` so the Go runtime stays
@@ -52,6 +62,16 @@ inside that budget. The image uses `docker/config.json`, driven by environment v
 | `MARGIT_PG_DSN` | — | `postgres://margit:margit@postgres:5432/margit?sslmode=disable` |
 
 Standalone in-memory: `docker run --rm --cpus 1 --memory 1g -p 8080:8080 margit:latest`.
+
+Compose also sets `MARGIT_MAX_DEPTH=64` (image default 25) and `MARGIT_BLOOM_EXPECTED=12000000`
+(image default 1000000). Postgres memory is tunable from the shell (compose interpolation), so the
+same dataset can be run with a cache that fits or one that does not:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PG_SHARED_BUFFERS` | `64MB` | `shared_buffers` |
+| `PG_EFFECTIVE_CACHE_SIZE` | `256MB` | planner hint |
+| `PG_MEM_LIMIT` | `384m` | Postgres container memory limit (includes its page cache) |
 
 ### Load test (k6)
 
@@ -75,6 +95,66 @@ no dropped iterations, ~30 MiB RSS):
 | Expand p95 | 14.6 ms | 5.0 ms |
 | Lookup p95 / p99 | 215 / 498 ms | 42 / 102 ms |
 | Margit CPU at peak | 0.96 core | 0.93 core |
+
+### Drive load test (large dataset, depths, cold vs hot)
+
+`loadtest/drive/` models a Google-Drive-like tenant hierarchy. `dataset.js` holds the schema and
+deterministic formulas, so the seeder and the test agree on every expected answer without storing
+the data in k6.
+
+| Namespace | Relations |
+|---|---|
+| `group` | `direct_member [user]`, `subgroup [group]`, `member = direct_member + subgroup->member` |
+| `role` | `assignee [user]`, `assignee_group [group]`, `member = assignee + assignee_group->member` |
+| `org` | `admin [user]`, `member_group [group]`, `member = admin + member_group->member` |
+| `folder` | `parent`, `org`, `owner_direct`, `editor_{user,group,role}`, `viewer_{user,group,role}`; `owner = owner_direct + parent->owner`; `editor = owner + editor_user + editor_group->member + editor_role->member + parent->editor`; `viewer = editor + viewer_user + viewer_group->member + viewer_role->member + org->member + parent->viewer` |
+| `file` | `parent`, `owner_direct`, `editor_user`, `viewer_user`, `viewer_group`, `banned`, `sharer`; `viewer = (editor + viewer_user + viewer_group->member + parent->viewer) - banned`; `share = editor & sharer` |
+
+Data (4.57M tuples, 900 MB in Postgres): 200k users in 2 of 20k groups each; 100 orgs with admins,
+a member group and admin/editor/viewer roles (users + groups); 10k workspaces of
+root → 4 folders → 16 folders → 128 files with owners, viewer users/groups/roles, sharers and a
+banned editor-group member on every 8th file; 200 folder chains per depth 1–48 plus 80-deep chains;
+200 nested group chains per depth 1–32; chains whose root viewer is an 8-deep group chain.
+
+```powershell
+docker compose run --rm k6 run /scripts/drive/seed.js          # ~60 s, ~77k tuples/s
+docker compose run --rm -e CACHE=cold k6 run /scripts/drive/test.js
+docker compose run --rm -e CACHE=hot  k6 run /scripts/drive/test.js
+```
+
+`CACHE=cold` draws uniformly from all workspaces and chains; `CACHE=hot` from 4 workspaces and 2 chains
+per depth. Each iteration picks one of 47 check kinds (direct, group, role, role group, org admin, org
+group, inherited, banned, outsider, share, folder chain/nested group/mixed by depth, too-deep → 422) or
+13 write flows (write → check → delete → check). Every answer is compared with the expected value
+(`correct` must be 100%). Knobs: `CHECK_RPS` (150), `WRITE_RPS` (10), `DURATION` (60s),
+`FOLDER_NEG_MAX` (8), `DEEP_NEGATIVE=1` to include deeper negative folder-chain checks. A per kind/depth
+table is printed and written to `loadtest/results/`.
+
+Results (150 checks/s + 10 write flows/s = 190 req/s, 0 errors, 0 dropped, 100% correct; margit
+~0.7 core, Postgres ~0.8 core):
+
+| p95 ms | cold (64 MB buffers) | cold (16 MB buffers, 128 MB container) | hot |
+|---|---|---|---|
+| Buffer cache hit ratio | 99.31% | 98.85% | 99.99% |
+| `file_owner_direct` / `share_owner` | 2.5 | 2.5 | 1.9 |
+| `file_l2_group` / `file_root_editor_group` | 8.7 | 8.3 | 6.7 |
+| `file_org_admin` / `file_outsider` (depth 4–5) | 28 | 28 | 25 |
+| `chain_owner` d=8 / 16 / 32 / 48 | 5.2 / 8.6 / 13.1 / 19.6 | 5.1 / 8.5 / 13.0 / 18.4 | 4.4 / 7.2 / 12.7 / 17.4 |
+| `nested_group` d=8 / 16 / 32 | 4.7 / 7.3 / 12.4 | 4.6 / 6.7 / 13.5 | 4.5 / 6.7 / 11.9 |
+| `chain_outsider` d=4 / 8 | 23 / 78 | 21 / 77 | 21 / 72 |
+| `chain_too_deep` d=80 (422) | 24 | 22 | 23 |
+| write flows (4 requests) | 3–25 | 3–22 | 3–21 |
+
+Findings:
+
+- Latency is dominated by sequential SQL round trips, not I/O: ~25 `SELECT`s per check at ~46 µs
+  server time each. Cold vs hot differs by 5–15%; even a 16 MB buffer pool keeps a 98.9% hit ratio
+  because B-tree inner pages stay cached (and the WSL vhdx is cached by the host).
+- Positive checks grow linearly with depth (folder chains ~0.35 ms/level, group chains ~0.3 ms/level).
+- Negative checks on folder chains grow ~O(d³): `viewer`, `editor` and `owner` each recurse through
+  `parent`, and Check has no per-request memoization. Isolated: d=8 → 209 SQL reads / 77 ms,
+  d=16 → 1,130 / 0.3 s, d=32 → 7,114 / 1.9 s, d=48 → 22,049 / 5.6 s; under load d=48 exceeded the 30 s
+  write timeout. Memoizing `(object, relation, subject)` per request would make this linear.
 
 ## Configuration
 
@@ -210,4 +290,4 @@ $env:MARGIT_PG_DSN = '...'; go test -count=1 -p 1 ./...        # also run store/
 | `config/` | Config file loading |
 | `cmd/tagger/` | Log tag filler/checker |
 | `Dockerfile`, `docker-compose.yml`, `docker/` | Container image, compose stack, container config, Prometheus/Grafana provisioning |
-| `loadtest/` | k6 load test script |
+| `loadtest/` | k6 load tests: `margit.js` (quick), `drive/` (large Drive-like dataset, depths, cold/hot) |

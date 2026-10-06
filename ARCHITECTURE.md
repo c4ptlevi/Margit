@@ -281,12 +281,19 @@ Routes use the pattern rather than the raw path, so label cardinality stays fixe
 ```mermaid
 flowchart LR
     M[margit :8080<br/>/metrics] -->|scrape 5s| P[Prometheus :9090]
+    PG[(Postgres<br/>pg_stat_database<br/>pg_stat_statements)] --> X[postgres-exporter :9187]
+    X -->|scrape 5s| P
+    C[cAdvisor :8080<br/>container cgroups] -->|scrape 5s| P
     P --> G[Grafana :3000<br/>Margit dashboard]
 ```
 
 The compose stack provisions the Prometheus data source and the `Margit` dashboard
 (`docker/grafana/dashboards/margit.json`). Panels cover traffic, errors, check decisions, latency
-percentiles and CPU/memory against the 1 CPU / 1 GiB container budget.
+percentiles and CPU/memory against the 1 CPU / 1 GiB container budget. A Containers row shows CPU and
+memory per compose service from cAdvisor (relabelled to `service`). A Postgres row shows
+connections, transactions/s, buffer cache hit ratio, block reads, DB size, and statements/s and mean
+execution time per SQL statement (a custom exporter query over `pg_stat_statements`, labelled by
+normalized query text).
 
 ## Known limitations
 
@@ -296,4 +303,6 @@ percentiles and CPU/memory against the 1 CPU / 1 GiB container budget.
 | Consistency | No snapshot tokens ("zookies"); a read sees whatever the store has committed. |
 | Schema changes | Updating a namespace does not check whether other namespaces' arrows still resolve; missing references evaluate as empty. Deleting a namespace keeps its tuples. |
 | Lookup cost | The candidate pass grows with fixpoint passes and candidate count and runs in full on every page; no pagination on Expand. |
+| Deep negative checks | Check has no per-request memo of `(object, relation, subject)`. Schemas where several relations each recurse through `parent` (Drive `viewer`/`editor`/`owner`) re-walk the chain, so negative checks cost ~O(d³) reads: 1,130 at d=16, 22,049 at d=48 (5.6 s). Positive checks short-circuit and stay linear. |
+| Round trips | Each tuple read is one SQL query (~25 per Drive check); latency is round-trip bound rather than I/O bound. |
 | Security | No authentication or rate limiting on the HTTP API. |
