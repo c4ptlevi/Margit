@@ -1,6 +1,9 @@
 package api
 
-import "github.com/c4ptlevi/margit/model"
+import (
+	"github.com/c4ptlevi/margit/engine"
+	"github.com/c4ptlevi/margit/model"
+)
 
 type relationBody struct {
 	Types []string `json:"types,omitempty"`
@@ -58,17 +61,24 @@ func (b tuplesBody) toModel() []model.RelationTuple {
 	return out
 }
 
+type checkBody struct {
+	tupleBody
+	Consistency engine.Consistency `json:"consistency"`
+}
+
 type expandBody struct {
-	Object   string `json:"object"`
-	Relation string `json:"relation"`
+	Object      string             `json:"object"`
+	Relation    string             `json:"relation"`
+	Consistency engine.Consistency `json:"consistency"`
 }
 
 type lookupBody struct {
-	Subject   string `json:"subject"`
-	Relation  string `json:"relation"`
-	Namespace string `json:"namespace"`
-	Limit     int    `json:"limit"`
-	Cursor    string `json:"cursor"`
+	Subject     string             `json:"subject"`
+	Relation    string             `json:"relation"`
+	Namespace   string             `json:"namespace"`
+	Limit       int                `json:"limit"`
+	Cursor      string             `json:"cursor"`
+	Consistency engine.Consistency `json:"consistency"`
 }
 
 type checkResponse struct {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"runtime/debug"
 	"strings"
@@ -15,8 +16,9 @@ import (
 )
 
 const (
-	TraceHeader  = "X-Trace-Id"
-	maxBodyBytes = 1 << 20
+	TraceHeader   = "X-Trace-Id"
+	maxBodyBytes  = 1 << 20
+	slowThreshold = time.Second
 )
 
 type Server struct {
@@ -28,6 +30,10 @@ type Server struct {
 
 func New(eng engine.ReBACEngine, log *logger.Logger) *Server {
 	s := &Server{engine: eng, log: log, mux: http.NewServeMux(), metrics: newMetrics()}
+	if c, ok := eng.(engine.CacheStatser); ok {
+		s.metrics.registerCache(c)
+		log.Info(context.Background(), "tag_3yn5aw", "response cache metrics registered")
+	}
 	s.mux.HandleFunc("GET /healthz", s.health)
 	s.mux.HandleFunc("GET /v1/namespaces", s.listNamespaces)
 	s.mux.HandleFunc("GET /v1/namespaces/{name}", s.getNamespace)
@@ -86,6 +92,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.metrics.inFlight.Dec()
 		s.metrics.observe(r, rec.status, took)
 		s.log.Info(ctx, "tag_irdd58", "request finished", "method", r.Method, "path", r.URL.Path, "status", rec.status, "took", took)
+		if took >= slowThreshold {
+			s.log.Warn(ctx, "tag_6cy0aj", "slow request", "method", r.Method, "path", r.URL.Path, "status", rec.status, "took", took, "threshold", slowThreshold)
+		}
 	}()
 	s.mux.ServeHTTP(rec, r)
 }
@@ -161,18 +170,22 @@ func (s *Server) deleteTuples(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) check(w http.ResponseWriter, r *http.Request) {
-	var body tupleBody
+	var body checkBody
 	if !s.decode(w, r, &body) {
 		return
 	}
+	ctx, ok := s.consistency(w, r, body.Consistency)
+	if !ok {
+		return
+	}
 	t := body.toModel()
-	ok, err := s.engine.Check(r.Context(), t.Object, t.Relation, t.Subject)
+	allowed, err := s.engine.Check(ctx, t.Object, t.Relation, t.Subject)
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	s.metrics.checkResult(ok)
-	writeJSON(w, http.StatusOK, checkResponse{Allowed: ok})
+	s.metrics.checkResult(allowed)
+	writeJSON(w, http.StatusOK, checkResponse{Allowed: allowed})
 }
 
 func (s *Server) expand(w http.ResponseWriter, r *http.Request) {
@@ -180,7 +193,11 @@ func (s *Server) expand(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &body) {
 		return
 	}
-	subjects, err := s.engine.Expand(r.Context(), parseEntity(body.Object), body.Relation)
+	ctx, ok := s.consistency(w, r, body.Consistency)
+	if !ok {
+		return
+	}
+	subjects, err := s.engine.Expand(ctx, parseEntity(body.Object), body.Relation)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -193,13 +210,26 @@ func (s *Server) lookup(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &body) {
 		return
 	}
-	objects, next, err := s.engine.Lookup(r.Context(), parseEntity(body.Subject), body.Relation, body.Namespace,
+	ctx, ok := s.consistency(w, r, body.Consistency)
+	if !ok {
+		return
+	}
+	objects, next, err := s.engine.Lookup(ctx, parseEntity(body.Subject), body.Relation, body.Namespace,
 		engine.Page{After: body.Cursor, Limit: body.Limit})
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, lookupResponse{Objects: entityStrings(objects), NextCursor: next})
+}
+
+func (s *Server) consistency(w http.ResponseWriter, r *http.Request, c engine.Consistency) (context.Context, bool) {
+	switch c {
+	case "", engine.MinimizeLatency, engine.FullyConsistent:
+		return engine.WithConsistency(r.Context(), c), true
+	}
+	s.fail(w, r, badRequestError{fmt.Errorf("consistency must be %q or %q", engine.MinimizeLatency, engine.FullyConsistent)})
+	return nil, false
 }
 
 type badRequestError struct{ err error }

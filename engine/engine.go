@@ -32,9 +32,10 @@ type ReBACEngine interface {
 }
 
 type Config struct {
-	MaxDepth       int `json:"max_depth"`
-	LookupLimit    int `json:"lookup_default_limit"`
-	MaxLookupLimit int `json:"lookup_max_limit"`
+	MaxDepth       int         `json:"max_depth"`
+	LookupLimit    int         `json:"lookup_default_limit"`
+	MaxLookupLimit int         `json:"lookup_max_limit"`
+	Cache          CacheConfig `json:"response_cache"`
 }
 
 type Page struct {
@@ -86,6 +87,7 @@ func (e *Engine) SaveNamespace(ctx context.Context, ns model.Namespace) error {
 		return err
 	}
 	if err := e.store.SaveNamespace(ctx, ns); err != nil {
+		e.log.Warn(ctx, "tag_abd4sb", "namespace save failed", "namespace", ns.Name, "err", err)
 		return err
 	}
 	e.log.Info(ctx, "tag_5b856o", "namespace saved", "namespace", ns.Name, "relations", len(ns.Relations))
@@ -118,6 +120,7 @@ func (e *Engine) DeleteNamespace(ctx context.Context, name string) error {
 		}
 	}
 	if err := e.store.DeleteNamespace(ctx, name); err != nil {
+		e.log.Debug(ctx, "tag_h758ev", "namespace delete failed", "namespace", name, "err", err)
 		return err
 	}
 	e.log.Info(ctx, "tag_1wwt03", "namespace deleted", "namespace", name)
@@ -125,9 +128,11 @@ func (e *Engine) DeleteNamespace(ctx context.Context, name string) error {
 }
 
 func (e *Engine) WriteTuples(ctx context.Context, tuples []model.RelationTuple) error {
+	start := time.Now()
 	r := e.newRequest()
 	for _, t := range tuples {
 		if err := ctx.Err(); err != nil {
+			e.log.Warn(ctx, "tag_svx9qp", "tuple write cancelled", "count", len(tuples), "err", err)
 			return err
 		}
 		ns, err := r.namespace(ctx, t.Object.Namespace)
@@ -140,13 +145,15 @@ func (e *Engine) WriteTuples(ctx context.Context, tuples []model.RelationTuple) 
 		}
 	}
 	if err := e.store.WriteTuples(ctx, tuples); err != nil {
+		e.log.Warn(ctx, "tag_b7p6x2", "tuple write failed", "count", len(tuples), "err", err)
 		return err
 	}
-	e.log.Debug(ctx, "tag_ipwl9z", "tuples written", "count", len(tuples))
+	e.log.Debug(ctx, "tag_ipwl9z", "tuples written", "count", len(tuples), "took", time.Since(start))
 	return nil
 }
 
 func (e *Engine) DeleteTuples(ctx context.Context, tuples []model.RelationTuple) error {
+	start := time.Now()
 	for _, t := range tuples {
 		if err := t.Validate(); err != nil {
 			e.log.Warn(ctx, "tag_c576m1", "tuple delete rejected", "tuple", t, "err", err)
@@ -154,9 +161,10 @@ func (e *Engine) DeleteTuples(ctx context.Context, tuples []model.RelationTuple)
 		}
 	}
 	if err := e.store.DeleteTuples(ctx, tuples); err != nil {
+		e.log.Warn(ctx, "tag_kj7z6a", "tuple delete failed", "count", len(tuples), "err", err)
 		return err
 	}
-	e.log.Debug(ctx, "tag_wyr26d", "tuples deleted", "count", len(tuples))
+	e.log.Debug(ctx, "tag_wyr26d", "tuples deleted", "count", len(tuples), "took", time.Since(start))
 	return nil
 }
 
@@ -183,6 +191,7 @@ func (e *Engine) Check(ctx context.Context, obj model.Entity, relation string, s
 func (e *Engine) Expand(ctx context.Context, obj model.Entity, relation string) ([]model.Entity, error) {
 	start := time.Now()
 	if err := obj.Validate(); err != nil {
+		e.log.Debug(ctx, "tag_4rmtvm", "expand rejected", "object", obj, "err", err)
 		return nil, err
 	}
 	r := e.newRequest()
@@ -203,10 +212,13 @@ func (e *Engine) Expand(ctx context.Context, obj model.Entity, relation string) 
 func (e *Engine) Lookup(ctx context.Context, sub model.Entity, relation string, namespace string, page Page) ([]model.Entity, string, error) {
 	start := time.Now()
 	if err := sub.Validate(); err != nil {
+		e.log.Debug(ctx, "tag_62wfq4", "lookup rejected", "subject", sub, "err", err)
 		return nil, "", err
 	}
 	if page.Limit < 0 {
-		return nil, "", fmt.Errorf("%w: %d", model.ErrInvalidLimit, page.Limit)
+		err := fmt.Errorf("%w: %d", model.ErrInvalidLimit, page.Limit)
+		e.log.Debug(ctx, "tag_vq06ud", "lookup rejected", "subject", sub, "err", err)
+		return nil, "", err
 	}
 	limit := page.Limit
 	if limit == 0 {
@@ -220,7 +232,9 @@ func (e *Engine) Lookup(ctx context.Context, sub model.Entity, relation string, 
 	}
 	l := &lookup{request: r, sub: sub, memo: map[nsRel]entitySet{}, active: map[nsRel]bool{}}
 	var candidates entitySet
+	passes := 0
 	for {
+		passes++
 		l.changed = false
 		set, err := l.candidates(ctx, namespace, relation, 0)
 		if err != nil {
@@ -257,7 +271,7 @@ func (e *Engine) Lookup(ctx context.Context, sub model.Entity, relation string, 
 		next = out[limit-1].ID
 	}
 	e.log.Debug(ctx, "tag_ivh9li", "lookup done", "subject", sub, "relation", relation, "namespace", namespace,
-		"after", page.After, "limit", limit, "candidates", len(candidates), "checked", checked, "count", len(out),
+		"after", page.After, "limit", limit, "passes", passes, "candidates", len(candidates), "checked", checked, "count", len(out),
 		"more", next != "", "took", time.Since(start))
 	return out, next, nil
 }
@@ -283,6 +297,7 @@ func (r *request) namespace(ctx context.Context, name string) (model.Namespace, 
 	}
 	ns, err := r.e.store.GetNamespace(ctx, name)
 	if errors.Is(err, model.ErrNotFound) {
+		r.e.log.Debug(ctx, "tag_3q8bav", "unknown namespace", "namespace", name)
 		return model.Namespace{}, fmt.Errorf("%w: %q", model.ErrUnknownNamespace, name)
 	}
 	if err != nil {
@@ -305,6 +320,7 @@ func (r *request) resolve(ctx context.Context, namespace, relation string, depth
 		return model.Relation{}, false, err
 	}
 	if depth > r.e.maxDepth {
+		r.e.log.Debug(ctx, "tag_08soiv", "max depth exceeded", "namespace", namespace, "relation", relation, "depth", depth, "max_depth", r.e.maxDepth)
 		return model.Relation{}, false, fmt.Errorf("%w: %s#%s at depth %d", model.ErrMaxDepthExceeded, namespace, relation, depth)
 	}
 	rel, err := r.relation(ctx, namespace, relation)

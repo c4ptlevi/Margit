@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/c4ptlevi/margit/engine"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -19,6 +20,7 @@ type metrics struct {
 	inFlight prometheus.Gauge
 	checks   *prometheus.CounterVec
 	handler  http.Handler
+	reg      *prometheus.Registry
 }
 
 func newMetrics() *metrics {
@@ -48,7 +50,21 @@ func newMetrics() *metrics {
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
 	m.handler = promhttp.HandlerFor(reg, promhttp.HandlerOpts{Registry: reg})
+	m.reg = reg
 	return m
+}
+
+func (m *metrics) registerCache(c engine.CacheStatser) {
+	m.reg.MustRegister(
+		prometheus.NewCounterFunc(prometheus.CounterOpts{Name: "margit_cache_hits_total", Help: "Response cache hits."},
+			func() float64 { return float64(c.CacheStats().Hits) }),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{Name: "margit_cache_misses_total", Help: "Response cache misses."},
+			func() float64 { return float64(c.CacheStats().Misses) }),
+		prometheus.NewCounterFunc(prometheus.CounterOpts{Name: "margit_cache_bypasses_total", Help: "Reads with consistency=full that skipped the response cache."},
+			func() float64 { return float64(c.CacheStats().Bypasses) }),
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "margit_cache_entries", Help: "Entries in the response cache, including expired ones not yet evicted."},
+			func() float64 { return float64(c.CacheStats().Entries) }),
+	)
 }
 
 func (m *metrics) observe(r *http.Request, status int, took time.Duration) {

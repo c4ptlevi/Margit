@@ -34,6 +34,10 @@ func run() int {
 	}
 	log := logger.New(os.Stdout, cfg.LogLevel)
 	log.Info(ctx, "tag_fqgc9d", "margit starting", "config", *configPath, "log_level", cfg.LogLevel)
+	log.Info(ctx, "tag_lcxi73", "config loaded", "store", cfg.Store.Type, "bloom_expected", cfg.Store.Postgres.BloomExpected,
+		"bloom_fp_rate", cfg.Store.Postgres.BloomFPRate, "max_depth", cfg.Engine.MaxDepth,
+		"lookup_default_limit", cfg.Engine.LookupLimit, "lookup_max_limit", cfg.Engine.MaxLookupLimit,
+		"addr", cfg.Server.Addr, "read_timeout", cfg.Server.ReadTimeout, "write_timeout", cfg.Server.WriteTimeout)
 
 	st, closeStore, err := store.Open(ctx, cfg.Store, log)
 	if err != nil {
@@ -42,8 +46,12 @@ func run() int {
 	}
 	defer closeStore()
 
-	eng := engine.New(st, &engine.MemExprCache{}, cfg.Engine, log)
-	log.Info(ctx, "tag_mx31g8", "engine ready", "max_depth", cfg.Engine.MaxDepth)
+	var eng engine.ReBACEngine = engine.New(st, &engine.MemExprCache{}, cfg.Engine, log)
+	if cfg.Engine.Cache.TTLMillis > 0 {
+		eng = engine.NewCached(eng, engine.NewMemResponseCache(ctx, cfg.Engine.Cache, log), log)
+	}
+	log.Info(ctx, "tag_mx31g8", "engine ready", "max_depth", cfg.Engine.MaxDepth,
+		"cache_ttl_ms", cfg.Engine.Cache.TTLMillis, "cache_max_entries", cfg.Engine.Cache.MaxEntries)
 
 	if err := api.New(eng, log).Run(ctx, cfg.Server); err != nil {
 		return 1

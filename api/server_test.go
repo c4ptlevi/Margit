@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -338,5 +339,32 @@ func TestMetrics(t *testing.T) {
 	}
 	if buf.Len() != logged {
 		t.Errorf("metrics scrape was logged: %s", buf.String()[logged:])
+	}
+}
+
+func TestResponseCacheConsistency(t *testing.T) {
+	eng := engine.NewCached(engine.New(store.NewMemoryStore(nil), nil, engine.Config{}, nil), engine.NewMemResponseCache(context.Background(), engine.CacheConfig{TTLMillis: 60_000}, nil), nil)
+	ts := httptest.NewServer(New(eng, nil))
+	t.Cleanup(ts.Close)
+	seed(t, ts)
+	q := `{"object":"document:readme","relation":"viewer","subject":"user:carol"%s}`
+	if b := mustStatus(t, ts, "POST", "/v1/check", fmt.Sprintf(q, ""), 200); !strings.Contains(string(b), "false") {
+		t.Fatalf("got %s", b)
+	}
+	mustStatus(t, ts, "POST", "/v1/tuples", `{"tuples":[{"object":"group:eng","relation":"member","subject":"user:carol"}]}`, 204)
+	if b := mustStatus(t, ts, "POST", "/v1/check", fmt.Sprintf(q, `,"consistency":"minimize_latency"`), 200); !strings.Contains(string(b), "false") {
+		t.Fatalf("cached read got %s", b)
+	}
+	if b := mustStatus(t, ts, "POST", "/v1/check", fmt.Sprintf(q, `,"consistency":"full"`), 200); !strings.Contains(string(b), "true") {
+		t.Fatalf("full read got %s", b)
+	}
+	mustStatus(t, ts, "POST", "/v1/check", fmt.Sprintf(q, `,"consistency":"eventual"`), 400)
+	mustStatus(t, ts, "POST", "/v1/expand", `{"object":"document:readme","relation":"viewer","consistency":"full"}`, 200)
+	mustStatus(t, ts, "POST", "/v1/lookup", `{"subject":"user:bob","relation":"viewer","namespace":"document","consistency":"bad"}`, 400)
+	b := mustStatus(t, ts, "GET", "/metrics", "", 200)
+	for _, m := range []string{"margit_cache_hits_total 1", "margit_cache_bypasses_total 2", "margit_cache_misses_total 1", "margit_cache_entries"} {
+		if !strings.Contains(string(b), m) {
+			t.Errorf("metrics missing %q", m)
+		}
 	}
 }

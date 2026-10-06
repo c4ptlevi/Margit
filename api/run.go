@@ -19,6 +19,10 @@ func (d *Duration) UnmarshalText(b []byte) error {
 	return nil
 }
 
+func (d Duration) String() string {
+	return time.Duration(d).String()
+}
+
 func (d Duration) MarshalText() ([]byte, error) {
 	return []byte(time.Duration(d).String()), nil
 }
