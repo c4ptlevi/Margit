@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/c4ptlevi/margit/engine"
+	"github.com/c4ptlevi/margit/cache"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -54,15 +54,16 @@ func newMetrics() *metrics {
 	return m
 }
 
-func (m *metrics) registerCache(c engine.CacheStatser) {
+func (m *metrics) registerCache(name string, c cache.Statser) {
+	l := prometheus.Labels{"cache": name}
 	m.reg.MustRegister(
-		prometheus.NewCounterFunc(prometheus.CounterOpts{Name: "margit_cache_hits_total", Help: "Response cache hits."},
+		prometheus.NewCounterFunc(prometheus.CounterOpts{Name: "margit_cache_hits_total", Help: "Cache hits by cache (response, query).", ConstLabels: l},
 			func() float64 { return float64(c.CacheStats().Hits) }),
-		prometheus.NewCounterFunc(prometheus.CounterOpts{Name: "margit_cache_misses_total", Help: "Response cache misses."},
+		prometheus.NewCounterFunc(prometheus.CounterOpts{Name: "margit_cache_misses_total", Help: "Cache misses by cache (response, query).", ConstLabels: l},
 			func() float64 { return float64(c.CacheStats().Misses) }),
-		prometheus.NewCounterFunc(prometheus.CounterOpts{Name: "margit_cache_bypasses_total", Help: "Reads with consistency=full that skipped the response cache."},
+		prometheus.NewCounterFunc(prometheus.CounterOpts{Name: "margit_cache_bypasses_total", Help: "Reads with consistency=full that skipped the cache.", ConstLabels: l},
 			func() float64 { return float64(c.CacheStats().Bypasses) }),
-		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "margit_cache_entries", Help: "Entries in the response cache, including expired ones not yet evicted."},
+		prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: "margit_cache_entries", Help: "Cache entries, including expired ones not yet evicted.", ConstLabels: l},
 			func() float64 { return float64(c.CacheStats().Entries) }),
 	)
 }

@@ -362,7 +362,7 @@ func TestResponseCacheConsistency(t *testing.T) {
 	mustStatus(t, ts, "POST", "/v1/expand", `{"object":"document:readme","relation":"viewer","consistency":"full"}`, 200)
 	mustStatus(t, ts, "POST", "/v1/lookup", `{"subject":"user:bob","relation":"viewer","namespace":"document","consistency":"bad"}`, 400)
 	b := mustStatus(t, ts, "GET", "/metrics", "", 200)
-	for _, m := range []string{"margit_cache_hits_total 1", "margit_cache_bypasses_total 2", "margit_cache_misses_total 1", "margit_cache_entries"} {
+	for _, m := range []string{`margit_cache_hits_total{cache="response"} 1`, `margit_cache_bypasses_total{cache="response"} 2`, `margit_cache_misses_total{cache="response"} 1`, `margit_cache_entries{cache="response"}`} {
 		if !strings.Contains(string(b), m) {
 			t.Errorf("metrics missing %q", m)
 		}

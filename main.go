@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"github.com/c4ptlevi/margit/api"
+	"github.com/c4ptlevi/margit/cache"
 	"github.com/c4ptlevi/margit/config"
 	"github.com/c4ptlevi/margit/engine"
 	"github.com/c4ptlevi/margit/logger"
@@ -45,15 +46,23 @@ func run() int {
 		return 1
 	}
 	defer closeStore()
+	if cfg.Store.Cache.Enabled() {
+		st = store.NewCached(st, cache.NewMem(ctx, "query", cfg.Store.Cache, log), log)
+	}
 
 	var eng engine.ReBACEngine = engine.New(st, &engine.MemExprCache{Log: log}, cfg.Engine, log)
-	if cfg.Engine.Cache.TTLMillis > 0 {
+	if cfg.Engine.Cache.Enabled() {
 		eng = engine.NewCached(eng, engine.NewMemResponseCache(ctx, cfg.Engine.Cache, log), log)
 	}
 	log.Info(ctx, "tag_mx31g8", "engine ready", "max_depth", cfg.Engine.MaxDepth,
-		"cache_ttl_ms", cfg.Engine.Cache.TTLMillis, "cache_max_entries", cfg.Engine.Cache.MaxEntries)
+		"response_cache_ttl_ms", cfg.Engine.Cache.TTLMillis, "response_cache_max_entries", cfg.Engine.Cache.MaxEntries,
+		"query_cache_ttl_ms", cfg.Store.Cache.TTLMillis, "query_cache_max_entries", cfg.Store.Cache.MaxEntries)
 
-	if err := api.New(eng, log).Run(ctx, cfg.Server); err != nil {
+	srv := api.New(eng, log)
+	if c, ok := st.(cache.Statser); ok {
+		srv.RegisterCache(ctx, "query", c)
+	}
+	if err := srv.Run(ctx, cfg.Server); err != nil {
 		log.Error(ctx, "tag_x5ba4a", "margit exiting", "err", err)
 		return 1
 	}

@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/c4ptlevi/margit/cache"
 	"github.com/c4ptlevi/margit/logger"
 )
 
@@ -19,6 +20,7 @@ const (
 type Config struct {
 	Type     Kind           `json:"type"`
 	Postgres PostgresConfig `json:"postgres"`
+	Cache    cache.Config   `json:"query_cache"`
 }
 
 func Open(ctx context.Context, cfg Config, log *logger.Logger) (Store, func(), error) {

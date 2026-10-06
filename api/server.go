@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/c4ptlevi/margit/cache"
 	"github.com/c4ptlevi/margit/engine"
 	"github.com/c4ptlevi/margit/logger"
 	"github.com/c4ptlevi/margit/model"
@@ -31,8 +32,7 @@ type Server struct {
 func New(eng engine.ReBACEngine, log *logger.Logger) *Server {
 	s := &Server{engine: eng, log: log, mux: http.NewServeMux(), metrics: newMetrics()}
 	if c, ok := eng.(engine.CacheStatser); ok {
-		s.metrics.registerCache(c)
-		log.Info(context.Background(), "tag_3yn5aw", "response cache metrics registered")
+		s.RegisterCache(context.Background(), "response", c)
 	}
 	s.mux.HandleFunc("GET /healthz", s.health)
 	s.mux.HandleFunc("GET /v1/namespaces", s.listNamespaces)
@@ -45,6 +45,11 @@ func New(eng engine.ReBACEngine, log *logger.Logger) *Server {
 	s.mux.HandleFunc("POST /v1/expand", s.expand)
 	s.mux.HandleFunc("POST /v1/lookup", s.lookup)
 	return s
+}
+
+func (s *Server) RegisterCache(ctx context.Context, name string, c cache.Statser) {
+	s.metrics.registerCache(name, c)
+	s.log.Info(ctx, "tag_3yn5aw", "cache metrics registered", "cache", name)
 }
 
 type statusRecorder struct {
