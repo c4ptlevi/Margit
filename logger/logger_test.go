@@ -28,6 +28,22 @@ func TestFormat(t *testing.T) {
 	}
 }
 
+type nilStringer struct{ s string }
+
+func (n *nilStringer) String() string { return n.s }
+
+func TestValueFormatting(t *testing.T) {
+	var buf bytes.Buffer
+	var np *nilStringer
+	fixedLogger(&buf, LevelDebug).Info(context.Background(), "t", "m",
+		"i", -3, "u", uint64(7), "f", 1.5, "b", true, "d", 1500*time.Millisecond,
+		"e", context.Canceled, "n", nil, "np", np, "s", []int{1, 2}, 9, "k")
+	want := `i=-3 u=7 f=1.5 b=true d=1.5s e="context canceled" n=<nil> np=<nil> s="[1 2]" 9=k` + "\n"
+	if got := buf.String(); !strings.HasSuffix(got, want) {
+		t.Fatalf("got  %q\nwant suffix %q", got, want)
+	}
+}
+
 func TestMissingTraceAndTag(t *testing.T) {
 	var buf bytes.Buffer
 	fixedLogger(&buf, LevelDebug).Error(context.Background(), "", "boom", "odd")

@@ -69,6 +69,10 @@ func New(w io.Writer, min Level) *Logger {
 	return &Logger{w: w, min: min, now: time.Now}
 }
 
+func (l *Logger) Enabled(level Level) bool {
+	return l != nil && level >= l.min
+}
+
 func (l *Logger) Debug(ctx context.Context, tag, msg string, kv ...any) {
 	l.log(ctx, LevelDebug, tag, msg, kv)
 }
@@ -100,7 +104,11 @@ func (l *Logger) log(ctx context.Context, level Level, tag, msg string, kv []any
 	var b strings.Builder
 	b.WriteString(l.now().Format(TimeFormat))
 	b.WriteByte(' ')
-	fmt.Fprintf(&b, "%-5s", level)
+	lv := level.String()
+	b.WriteString(lv)
+	for i := len(lv); i < 5; i++ {
+		b.WriteByte(' ')
+	}
 	b.WriteString(" tag=")
 	b.WriteString(tag)
 	b.WriteString(" pkg=")
@@ -112,12 +120,12 @@ func (l *Logger) log(ctx context.Context, level Level, tag, msg string, kv []any
 	for i := 0; i < len(kv); i += 2 {
 		key, val := "!BADKEY", kv[i]
 		if i+1 < len(kv) {
-			key, val = fmt.Sprint(kv[i]), kv[i+1]
+			key, val = text(kv[i]), kv[i+1]
 		}
 		b.WriteByte(' ')
 		b.WriteString(key)
 		b.WriteByte('=')
-		b.WriteString(quote(fmt.Sprint(val)))
+		b.WriteString(quote(text(val)))
 	}
 	b.WriteByte('\n')
 
@@ -141,6 +149,51 @@ func callerPackage(skip int) string {
 		name = name[:i]
 	}
 	return name
+}
+
+func text(v any) (s string) {
+	defer func() {
+		if recover() != nil {
+			s = "<nil>"
+		}
+	}()
+	switch v := v.(type) {
+	case nil:
+		return "<nil>"
+	case string:
+		return v
+	case error:
+		return v.Error()
+	case fmt.Stringer:
+		return v.String()
+	case bool:
+		return strconv.FormatBool(v)
+	case int:
+		return strconv.Itoa(v)
+	case int8:
+		return strconv.FormatInt(int64(v), 10)
+	case int16:
+		return strconv.FormatInt(int64(v), 10)
+	case int32:
+		return strconv.FormatInt(int64(v), 10)
+	case int64:
+		return strconv.FormatInt(v, 10)
+	case uint:
+		return strconv.FormatUint(uint64(v), 10)
+	case uint8:
+		return strconv.FormatUint(uint64(v), 10)
+	case uint16:
+		return strconv.FormatUint(uint64(v), 10)
+	case uint32:
+		return strconv.FormatUint(uint64(v), 10)
+	case uint64:
+		return strconv.FormatUint(v, 10)
+	case float32:
+		return strconv.FormatFloat(float64(v), 'g', -1, 32)
+	case float64:
+		return strconv.FormatFloat(v, 'g', -1, 64)
+	}
+	return fmt.Sprint(v)
 }
 
 func quote(s string) string {
