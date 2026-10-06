@@ -20,13 +20,14 @@ const (
 )
 
 type Server struct {
-	engine engine.ReBACEngine
-	log    *logger.Logger
-	mux    *http.ServeMux
+	engine  engine.ReBACEngine
+	log     *logger.Logger
+	mux     *http.ServeMux
+	metrics *metrics
 }
 
 func New(eng engine.ReBACEngine, log *logger.Logger) *Server {
-	s := &Server{engine: eng, log: log, mux: http.NewServeMux()}
+	s := &Server{engine: eng, log: log, mux: http.NewServeMux(), metrics: newMetrics()}
 	s.mux.HandleFunc("GET /healthz", s.health)
 	s.mux.HandleFunc("GET /v1/namespaces", s.listNamespaces)
 	s.mux.HandleFunc("GET /v1/namespaces/{name}", s.getNamespace)
@@ -61,7 +62,12 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == MetricsPath {
+		s.metrics.handler.ServeHTTP(w, r)
+		return
+	}
 	start := time.Now()
+	s.metrics.inFlight.Inc()
 	id := logger.NewTraceID()
 	ctx := logger.WithTraceID(r.Context(), id)
 	r = r.WithContext(ctx)
@@ -76,7 +82,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				writeJSON(rec, http.StatusInternalServerError, errorBody{Error: "internal error", TraceID: id})
 			}
 		}
-		s.log.Info(ctx, "tag_irdd58", "request finished", "method", r.Method, "path", r.URL.Path, "status", rec.status, "took", time.Since(start))
+		took := time.Since(start)
+		s.metrics.inFlight.Dec()
+		s.metrics.observe(r, rec.status, took)
+		s.log.Info(ctx, "tag_irdd58", "request finished", "method", r.Method, "path", r.URL.Path, "status", rec.status, "took", took)
 	}()
 	s.mux.ServeHTTP(rec, r)
 }
@@ -162,6 +171,7 @@ func (s *Server) check(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, r, err)
 		return
 	}
+	s.metrics.checkResult(ok)
 	writeJSON(w, http.StatusOK, checkResponse{Allowed: ok})
 }
 

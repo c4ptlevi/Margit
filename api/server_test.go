@@ -286,3 +286,34 @@ func TestDurationConfig(t *testing.T) {
 		t.Fatal("bad duration accepted")
 	}
 }
+
+func TestMetrics(t *testing.T) {
+	var buf bytes.Buffer
+	ts := newTestServer(t, logger.New(&buf, logger.LevelInfo))
+	seed(t, ts)
+	mustStatus(t, ts, "POST", "/v1/check", `{"object":"document:readme","relation":"viewer","subject":"user:alice"}`, 200)
+	mustStatus(t, ts, "POST", "/v1/check", `{"object":"document:readme","relation":"viewer","subject":"user:dave"}`, 200)
+	mustStatus(t, ts, "GET", "/v1/namespaces/nope", "", 404)
+	mustStatus(t, ts, "GET", "/no/such/route", "", 404)
+	logged := buf.Len()
+
+	body := string(mustStatus(t, ts, "GET", MetricsPath, "", 200))
+	for _, want := range []string{
+		`margit_http_requests_total{method="PUT",route="/v1/namespaces/{name}",status="204"} 3`,
+		`margit_http_requests_total{method="POST",route="/v1/check",status="200"} 2`,
+		`margit_http_requests_total{method="GET",route="/v1/namespaces/{name}",status="404"} 1`,
+		`margit_http_requests_total{method="GET",route="unmatched",status="404"} 1`,
+		`margit_http_request_duration_seconds_count{method="POST",route="/v1/tuples"} 1`,
+		`margit_check_results_total{allowed="true"} 1`,
+		`margit_check_results_total{allowed="false"} 1`,
+		`margit_http_requests_in_flight 0`,
+		`go_goroutines`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics missing %q", want)
+		}
+	}
+	if buf.Len() != logged {
+		t.Errorf("metrics scrape was logged: %s", buf.String()[logged:])
+	}
+}
