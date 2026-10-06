@@ -72,7 +72,45 @@ reported rate answered ≥ 99.9% of requests correctly (most 100%).
   baseline). Treat differences smaller than that as noise; the query-cache gains are well outside it.
 - **Freshness cost.** The query cache invalidates on local writes, so `read-write` / `write-heavy`
   correctness stayed at 100%. Writes made by another instance would be visible after at most
-  `ttl_ms`; see *Caches and consistency* in the README.
+  `ttl_ms`; see [*Caches and consistency*](README.md#caches-and-consistency) in the README.
+
+## Bloom filter
+
+The Postgres store keeps a bloom filter over `(object, relation)` and `(subject, relation)` edges
+(plus namespaces and relations) and skips the `SELECT` when the key is definitely absent. To measure it,
+each configuration was rerun at its max rate from the table above with the filter on (default,
+`bloom_expected` 12 M) and off (`-BloomExpected 0`), back to back on the same image (`4090559`).
+The read-shallow pair used ramp 15 s + hold 45 s; the others used ramp 5 s + hold 20 s.
+
+| Profile @ it/s | Caches | Bloom | check p95 | p99 | dropped | SQL stmts / req | margit CPU | PG CPU | Result |
+|---|---|---|---:|---:|---:|---:|---:|---:|---|
+| `read-shallow` @ 226 | none | on | 41.8 | 151.6 | 0 | 36.9 | 0.86 | 1.21 | PASS |
+| | | off | 3,436.2 | 3,981.5 | 3,874 | 75.4 | 0.96 | 1.48 | FAIL |
+| `checks-only` @ 169 | none | on | 21.4 | 28.2 | 0 | 35.2 | 0.74 | 0.84 | PASS |
+| | | off | 1,324.4 | 1,516.1 | 167 | 74.1 | 0.75 | 1.23 | FAIL |
+| `checks-only` @ 581 | query | on | 5.7 | 7.8 | 0 | 5.8 | 0.55 | 0.38 | PASS |
+| | | off | 303.6 | 435.3 | 139 | 15.1 | 0.72 | 0.99 | FAIL |
+| `realistic` @ 338 | query | on | 26.9 | 132.9 | 0 | 12.7 | 0.59 | 0.53 | PASS |
+| | | off | 444.0 (lookup 4,074) | 912.7 | 341 | 22.4 | 0.56 | 0.78 | FAIL |
+| `read-deep` @ 469 | query | on | 25.4 | 54.0 | 0 | 5.3 | 0.54 | 0.32 | PASS |
+| | | off | 3,660.3 | 6,679.3 | 5,543 | 39.3 | 0.72 | 0.77 | FAIL |
+
+All runs, with and without the filter, answered 100% correctly; the filter only removes queries.
+
+- **Every max rate depends on the filter.** Without it no configuration holds its max rate: check p95
+  goes from 6–42 ms to 0.3–3.7 s, and k6 drops iterations.
+- **About half of the graph's store reads are for edges that do not exist.** Evaluation probes every
+  branch of a userset rewrite (`viewer_direct`, `viewer_group`, `parent`, role and org paths …), and most
+  are empty for a given object. Without caches, the filter cuts SQL statements per check from ~75 to
+  ~36 and removes ~0.3–0.4 Postgres cores of load.
+- **It still matters with the query cache.** Empty results that miss the cache go to Postgres
+  unless the filter answers first, so statements per request rise 2.6× (`checks-only`), 1.8×
+  (`realistic`) and 7× (`read-deep`, whose missing-edge probes along 48-level chains dominate).
+- **Cost:** 4.2 s at startup to load 4.57 M tuples (about 9.1 M keys), ~14 MiB of memory (12 M expected keys at 1%,
+  7 hashes; estimated false-positive rate ~0.25% at this fill), and one in-process hash test per read.
+- **Caveat:** a single instance adds its own writes to the filter; with several instances, the filter
+  must also learn other instances' writes (e.g. reload or a change feed), or reads can wrongly skip
+  tuples written elsewhere.
 
 ## Details at the max rate
 
@@ -129,6 +167,8 @@ foreach ($p in 'read-shallow','checks-only','read-deep','read-write','write-heav
     .\loadtest\run.ps1 -Profile $p -FindMax -Warm -Ramp 15s -Duration 45s -QueryCacheTtlMs 5000                 # query cache
     .\loadtest\run.ps1 -Profile $p -FindMax -Warm -Ramp 15s -Duration 45s -CacheTtlMs 5000 -QueryCacheTtlMs 5000 # both
 }
+# bloom filter off at a given max rate (compare with the same command without -BloomExpected)
+.\loadtest\run.ps1 -Profile realistic -Rps 338 -Warm -Ramp 5s -Duration 20s -QueryCacheTtlMs 5000 -BloomExpected 0
 ```
 
 Per-step reports (`<profile>[-cache…][-qcache…]-<rate>-<stamp>.md/.json`) and per-search summaries

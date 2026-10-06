@@ -107,6 +107,7 @@ profile and `loadtest/run.ps1` makes the result reproducible:
 .\loadtest\run.ps1 -Profile read-deep -FindMax -Warm -Ramp 15s -Duration 45s  # max rate with check p95 < 50 ms
 .\loadtest\run.ps1 -Profile realistic -FindMax -Warm -CacheTtlMs 5000          # same, with the response cache on
 .\loadtest\run.ps1 -Profile realistic -FindMax -Warm -QueryCacheTtlMs 5000     # same, with the SQL query cache on
+.\loadtest\run.ps1 -Profile realistic -Rps 338 -Warm -QueryCacheTtlMs 5000 -BloomExpected 0  # bloom filter off
 ```
 
 `run.ps1` applies `resources` (margit CPUs/memory/GOMAXPROCS/GOMEMLIMIT, Postgres shared_buffers/
@@ -142,7 +143,7 @@ Profile fields (all optional except `mix`/`kinds`):
 |---|---|
 | `rps`, `ramp`, `duration` | target iterations/s (open model, `ramping-arrival-rate`), ramp-up, hold; `RPS`/`DURATION` env and `-Rps`/`-Duration` override |
 | `vus`, `max_vus`, `lookup_limit`, `cold_start` | k6 VU pool, Lookup `limit`, cold start before each run |
-| `resources` | `margit: {cpus, memory, gomaxprocs, gomemlimit, cache_ttl_ms, cache_max_entries, query_cache_ttl_ms, query_cache_max_entries}`, `postgres: {shared_buffers, effective_cache_size, memory}`; `-CacheTtlMs` / `-QueryCacheTtlMs` override the TTLs and reports are tagged `<profile>[-cache<ttl>ms][-qcache<ttl>ms]` |
+| `resources` | `margit: {cpus, memory, gomaxprocs, gomemlimit, cache_ttl_ms, cache_max_entries, query_cache_ttl_ms, query_cache_max_entries, bloom_expected}`, `postgres: {shared_buffers, effective_cache_size, memory}`; `-CacheTtlMs` / `-QueryCacheTtlMs` override the TTLs, `-BloomExpected` the filter size (`0` = off, default 12 M); reports are tagged `<profile>[-cache<ttl>ms][-qcache<ttl>ms][-nobloom]` |
 | `popularity` | `workspaces`, `chains`, `users`: `{"dist": "uniform"}`, `{"dist": "zipf", "s": 1.0}` or `{"dist": "hot", "count": 4}` |
 | `mix` | weights of `check`, `lookup`, `expand`, `write` |
 | `kinds` | per op, weights of request kinds (below); unknown names fail fast |
@@ -166,7 +167,7 @@ data in the database: putting a different schema for `group` etc. silently chang
 #### Results
 
 Max it/s with check p95 < 50 ms (margit 1 CPU / 1 GiB, warm, 5 s cache TTLs). Full method, per-profile
-CPU, hit ratios and latencies are in [`loadtest/RESULTS.md`](loadtest/RESULTS.md).
+CPU, hit ratios and latencies are in [`RESULTS.md`](RESULTS.md).
 
 | Profile | baseline | response cache | query cache | both caches |
 |---|---:|---:|---:|---:|
@@ -182,6 +183,9 @@ Findings:
 - The SQL query cache gives 2–4.7× capacity on every profile (80–83% of store reads served from memory,
   98.7% on deep hierarchies). The response cache alone hits only 1–2% of randomized checks, so its column is
   within the ~±15–20% run-to-run variance; it helps only when exact questions repeat (`read-deep`, both caches).
+- The Postgres bloom filter is required for every max rate above: with it off (`-BloomExpected 0`) check p95
+  rises from 6?42 ms to 0.3?3.7 s at the same rates, because about half of all store reads probe edges that
+  do not exist (~75 vs ~36 SQL statements per check without caches). Cost: 4.2 s startup and ~14 MiB.
 - Without caches, `realistic` tops out at ~106 it/s, limited by Lookup (p95 ~1.1 s) and ~35 SQL statements
   per request; with the query cache margit's single core becomes the limit.
 - Latency is dominated by sequential SQL round trips, not I/O: ~25 `SELECT`s per check at ~46 µs
@@ -369,4 +373,5 @@ $env:MARGIT_PG_DSN = '...'; go test -count=1 -p 1 ./...        # also run store/
 | `config/` | Config file loading |
 | `cmd/tagger/` | Log tag filler/checker |
 | `Dockerfile`, `docker-compose.yml`, `docker/` | Container image, compose stack, container config, Prometheus/Grafana provisioning |
-| `loadtest/` | `drive/` dataset, seeder and profile-driven k6 script; `profiles/*.json`; `run.ps1` reproducible runner; `RESULTS.md` published results; `results/` (ignored) |
+| `RESULTS.md` | Published load test results (max QPS per profile, caches, bloom filter) |
+| `loadtest/` | `drive/` dataset, seeder and profile-driven k6 script; `profiles/*.json`; `run.ps1` reproducible runner; `results/` (ignored) |
