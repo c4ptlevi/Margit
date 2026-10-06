@@ -1,0 +1,32 @@
+margit_statements:
+  query: |
+    SELECT left(regexp_replace(s.query, '\s+', ' ', 'g'), 90) AS query,
+           sum(s.calls) AS calls,
+           sum(s.total_exec_time) / 1000.0 AS exec_seconds,
+           sum(s.rows) AS rows,
+           sum(s.shared_blks_hit) AS shared_blks_hit,
+           sum(s.shared_blks_read) AS shared_blks_read
+    FROM pg_stat_statements s
+    JOIN pg_database d ON d.oid = s.dbid
+    WHERE d.datname = 'margit'
+      AND s.query ILIKE '%relation_tuples%'
+    GROUP BY 1
+  metrics:
+    - query:
+        usage: LABEL
+        description: Normalized statement text
+    - calls:
+        usage: COUNTER
+        description: Times executed
+    - exec_seconds:
+        usage: COUNTER
+        description: Total execution time in seconds
+    - rows:
+        usage: COUNTER
+        description: Rows returned or affected
+    - shared_blks_hit:
+        usage: COUNTER
+        description: Shared buffer hits
+    - shared_blks_read:
+        usage: COUNTER
+        description: Blocks read from disk or OS cache

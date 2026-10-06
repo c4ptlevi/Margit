@@ -9,6 +9,8 @@ services:
     environment:
       MARGIT_LOG_LEVEL: info
       MARGIT_STORE_TYPE: postgres
+      MARGIT_MAX_DEPTH: ${MARGIT_MAX_DEPTH:-64}
+      MARGIT_BLOOM_EXPECTED: ${MARGIT_BLOOM_EXPECTED:-12000000}
       MARGIT_PG_DSN: postgres://margit:margit@postgres:5432/margit?sslmode=disable
     depends_on:
       postgres:
@@ -21,17 +23,73 @@ services:
 
   postgres:
     image: postgres:17-alpine
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${PG_SHARED_BUFFERS:-64MB}
+      - -c
+      - effective_cache_size=${PG_EFFECTIVE_CACHE_SIZE:-256MB}
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_wal_size=4GB
+      - -c
+      - track_io_timing=on
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=top
     environment:
       POSTGRES_USER: margit
       POSTGRES_PASSWORD: margit
       POSTGRES_DB: margit
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./docker/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    mem_limit: ${PG_MEM_LIMIT:-384m}
+    memswap_limit: ${PG_MEM_LIMIT:-384m}
+    shm_size: 128m
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U margit -d margit"]
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.17.1
+    command:
+      - --no-collector.stat_statements
+      - --extend.query-path=/etc/postgres-exporter/queries.yml
+    volumes:
+      - ./docker/postgres/exporter-queries.yml:/etc/postgres-exporter/queries.yml:ro
+    environment:
+      DATA_SOURCE_URI: postgres:5432/margit?sslmode=disable
+      DATA_SOURCE_USER: margit
+      DATA_SOURCE_PASS: margit
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.52.1
+    privileged: true
+    devices:
+      - /dev/kmsg
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=5s
+      - --store_container_labels=false
+      - --whitelisted_container_labels=com.docker.compose.service
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
     restart: unless-stopped
 
   prometheus:
@@ -74,6 +132,7 @@ services:
       BASE_URL: http://margit:8080
     volumes:
       - ./loadtest:/scripts:ro
+      - ./loadtest/results:/results
     command: ["run", "/scripts/margit.js"]
     depends_on:
       margit:
