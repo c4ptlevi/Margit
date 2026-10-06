@@ -11,7 +11,11 @@
   "engine": {
     "max_depth": 25,
     "lookup_default_limit": 100,
-    "lookup_max_limit": 1000
+    "lookup_max_limit": 1000,
+    "response_cache": {
+      "ttl_ms": 0,
+      "max_entries": 1000000
+    }
   },
   "server": {
     "addr": ":8080",
