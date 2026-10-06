@@ -1,0 +1,99 @@
+{
+  "name": "heavy",
+  "description": "Lookups and expands only, at low rate, to measure the expensive endpoints.",
+  "rps": 5,
+  "ramp": "30s",
+  "duration": "90s",
+  "cold_start": true,
+  "lookup_limit": 20,
+  "vus": 100,
+  "max_vus": 600,
+  "resources": {
+    "margit": {
+      "cpus": 1,
+      "memory": "1g",
+      "gomaxprocs": 1,
+      "gomemlimit": "900MiB"
+    },
+    "postgres": {
+      "shared_buffers": "64MB",
+      "effective_cache_size": "256MB",
+      "memory": "384m"
+    }
+  },
+  "popularity": {
+    "workspaces": {
+      "dist": "zipf",
+      "s": 1.0
+    },
+    "chains": {
+      "dist": "zipf",
+      "s": 1.0
+    },
+    "users": {
+      "dist": "zipf",
+      "s": 1.0
+    }
+  },
+  "mix": {
+    "lookup": 70,
+    "expand": 30
+  },
+  "kinds": {
+    "lookup": {
+      "lookup_my_files": 4,
+      "lookup_team_files": 3,
+      "lookup_my_groups": 2,
+      "lookup_owner_folders": 1,
+      "lookup_outsider": 1
+    },
+    "expand": {
+      "expand_file_viewers": 2,
+      "expand_folder_viewers": 2,
+      "expand_group_chain": 1,
+      "expand_folder_chain": 1
+    }
+  },
+  "depths": {
+    "folder_chain": {
+      "1": 1,
+      "2": 2,
+      "4": 3,
+      "8": 3,
+      "16": 2,
+      "32": 1
+    },
+    "folder_chain_denied": {
+      "1": 1,
+      "2": 1,
+      "4": 1
+    },
+    "group_chain": {
+      "1": 2,
+      "2": 3,
+      "4": 3,
+      "8": 2,
+      "16": 1,
+      "32": 1
+    },
+    "folder_then_group": {
+      "4": 1
+    },
+    "expand_folder_chain": {
+      "1": 1,
+      "2": 1,
+      "4": 1,
+      "8": 1
+    }
+  },
+  "slo": {
+    "lookup": {
+      "p95_ms": 1000
+    },
+    "expand": {
+      "p95_ms": 500
+    },
+    "error_rate": 0.01,
+    "correct_rate": 0.999
+  }
+}

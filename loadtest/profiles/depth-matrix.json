@@ -1,0 +1,114 @@
+{
+  "name": "depth-matrix",
+  "description": "Every check kind and depth with equal weight, uniform popularity (cold). Latency per kind x depth.",
+  "rps": 150,
+  "ramp": "30s",
+  "duration": "90s",
+  "cold_start": true,
+  "lookup_limit": 20,
+  "vus": 100,
+  "max_vus": 600,
+  "resources": {
+    "margit": {
+      "cpus": 1,
+      "memory": "1g",
+      "gomaxprocs": 1,
+      "gomemlimit": "900MiB"
+    },
+    "postgres": {
+      "shared_buffers": "64MB",
+      "effective_cache_size": "256MB",
+      "memory": "384m"
+    }
+  },
+  "popularity": {
+    "workspaces": {
+      "dist": "uniform"
+    },
+    "chains": {
+      "dist": "uniform"
+    },
+    "users": {
+      "dist": "uniform"
+    }
+  },
+  "mix": {
+    "check": 94,
+    "write": 6
+  },
+  "kinds": {
+    "check": {
+      "file_view_l2_group": 1,
+      "file_view_direct": 1,
+      "file_edit_owner": 1,
+      "file_edit_team": 1,
+      "file_edit_role": 1,
+      "file_view_l1": 1,
+      "file_view_role": 1,
+      "file_view_role_group": 1,
+      "file_view_org_admin": 1,
+      "file_view_org_group": 1,
+      "file_share": 1,
+      "file_share_denied": 1,
+      "file_banned": 1,
+      "file_outsider": 1,
+      "cross_workspace": 1,
+      "folder_chain": 1,
+      "folder_chain_denied": 1,
+      "group_chain": 1,
+      "group_chain_denied": 1,
+      "folder_then_group": 1,
+      "too_deep": 1
+    },
+    "write": {
+      "write_create_file": 1,
+      "write_share": 1,
+      "write_join_group": 1,
+      "write_role_assign": 1,
+      "write_join_group_chain": 1,
+      "write_file_in_chain": 1
+    }
+  },
+  "depths": {
+    "folder_chain": {
+      "1": 1,
+      "2": 1,
+      "4": 1,
+      "8": 1,
+      "16": 1,
+      "32": 1,
+      "48": 1
+    },
+    "folder_chain_denied": {
+      "1": 1,
+      "2": 1,
+      "4": 1,
+      "8": 1
+    },
+    "group_chain": {
+      "1": 1,
+      "2": 1,
+      "4": 1,
+      "8": 1,
+      "16": 1,
+      "32": 1
+    },
+    "folder_then_group": {
+      "4": 1,
+      "16": 1
+    },
+    "expand_folder_chain": {
+      "1": 1
+    }
+  },
+  "slo": {
+    "check": {
+      "p95_ms": 100
+    },
+    "write": {
+      "p95_ms": 100
+    },
+    "error_rate": 0.01,
+    "correct_rate": 1
+  }
+}

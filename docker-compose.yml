@@ -11,13 +11,17 @@ services:
       MARGIT_STORE_TYPE: postgres
       MARGIT_MAX_DEPTH: ${MARGIT_MAX_DEPTH:-64}
       MARGIT_BLOOM_EXPECTED: ${MARGIT_BLOOM_EXPECTED:-12000000}
+      MARGIT_CACHE_TTL_MS: ${MARGIT_CACHE_TTL_MS:-0}
+      MARGIT_CACHE_MAX_ENTRIES: ${MARGIT_CACHE_MAX_ENTRIES:-1000000}
+      GOMAXPROCS: ${MARGIT_GOMAXPROCS:-1}
+      GOMEMLIMIT: ${MARGIT_GOMEMLIMIT:-900MiB}
       MARGIT_PG_DSN: postgres://margit:margit@postgres:5432/margit?sslmode=disable
     depends_on:
       postgres:
         condition: service_healthy
-    cpus: 1
-    mem_limit: 1g
-    memswap_limit: 1g
+    cpus: ${MARGIT_CPUS:-1}
+    mem_limit: ${MARGIT_MEM:-1g}
+    memswap_limit: ${MARGIT_MEM:-1g}
     stop_grace_period: 20s
     restart: unless-stopped
 
@@ -131,9 +135,10 @@ services:
     environment:
       BASE_URL: http://margit:8080
     volumes:
-      - ./loadtest:/scripts:ro
+      - ./loadtest/drive:/scripts/drive:ro
+      - ./loadtest/profiles:/scripts/profiles:ro
       - ./loadtest/results:/results
-    command: ["run", "/scripts/margit.js"]
+    command: ["run", "/scripts/drive/traffic.js"]
     depends_on:
       margit:
         condition: service_healthy

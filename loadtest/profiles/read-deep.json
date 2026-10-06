@@ -1,0 +1,93 @@
+{
+  "name": "read-deep",
+  "description": "Checks only on deep hierarchies: folder chains 8-48, nested groups 8-32, chains rooted in group chains; some denied.",
+  "rps": 150,
+  "ramp": "30s",
+  "duration": "120s",
+  "cold_start": true,
+  "lookup_limit": 20,
+  "vus": 100,
+  "max_vus": 600,
+  "resources": {
+    "margit": {
+      "cpus": 1,
+      "memory": "1g",
+      "gomaxprocs": 1,
+      "gomemlimit": "900MiB"
+    },
+    "postgres": {
+      "shared_buffers": "64MB",
+      "effective_cache_size": "256MB",
+      "memory": "384m"
+    }
+  },
+  "popularity": {
+    "workspaces": {
+      "dist": "zipf",
+      "s": 1.0
+    },
+    "chains": {
+      "dist": "zipf",
+      "s": 1.0
+    },
+    "users": {
+      "dist": "zipf",
+      "s": 1.0
+    }
+  },
+  "mix": {
+    "check": 100
+  },
+  "kinds": {
+    "check": {
+      "folder_chain": 4,
+      "group_chain": 3,
+      "folder_then_group": 2,
+      "folder_chain_denied": 1,
+      "group_chain_denied": 1
+    }
+  },
+  "depths": {
+    "folder_chain": {
+      "8": 3,
+      "16": 3,
+      "32": 2,
+      "48": 1
+    },
+    "folder_chain_denied": {
+      "4": 1,
+      "8": 1
+    },
+    "group_chain": {
+      "8": 3,
+      "16": 2,
+      "32": 1
+    },
+    "folder_then_group": {
+      "16": 1,
+      "32": 1
+    },
+    "expand_folder_chain": {
+      "1": 1,
+      "2": 1,
+      "4": 1,
+      "8": 1
+    }
+  },
+  "slo": {
+    "check": {
+      "p95_ms": 50
+    },
+    "write": {
+      "p95_ms": 100
+    },
+    "expand": {
+      "p95_ms": 500
+    },
+    "lookup": {
+      "p95_ms": 1000
+    },
+    "error_rate": 0.01,
+    "correct_rate": 0.999
+  }
+}

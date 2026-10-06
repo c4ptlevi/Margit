@@ -1,0 +1,130 @@
+{
+  "name": "checks-only",
+  "description": "Same popularity and check kinds as realistic, checks only. Use for check capacity.",
+  "rps": 300,
+  "ramp": "30s",
+  "duration": "120s",
+  "cold_start": true,
+  "lookup_limit": 20,
+  "vus": 100,
+  "max_vus": 600,
+  "resources": {
+    "margit": {
+      "cpus": 1,
+      "memory": "1g",
+      "gomaxprocs": 1,
+      "gomemlimit": "900MiB"
+    },
+    "postgres": {
+      "shared_buffers": "64MB",
+      "effective_cache_size": "256MB",
+      "memory": "384m"
+    }
+  },
+  "popularity": {
+    "workspaces": {
+      "dist": "zipf",
+      "s": 1.0
+    },
+    "chains": {
+      "dist": "zipf",
+      "s": 1.0
+    },
+    "users": {
+      "dist": "zipf",
+      "s": 1.0
+    }
+  },
+  "mix": {
+    "check": 100
+  },
+  "kinds": {
+    "check": {
+      "file_view_l2_group": 22,
+      "file_view_direct": 8,
+      "file_edit_owner": 10,
+      "file_edit_team": 10,
+      "file_edit_role": 2,
+      "file_view_l1": 6,
+      "file_view_role": 3,
+      "file_view_role_group": 2,
+      "file_view_org_admin": 2,
+      "file_view_org_group": 2,
+      "file_share": 3,
+      "file_share_denied": 1,
+      "file_banned": 2,
+      "file_outsider": 3,
+      "cross_workspace": 15,
+      "folder_chain": 3,
+      "folder_chain_denied": 1,
+      "group_chain": 3,
+      "group_chain_denied": 1,
+      "folder_then_group": 1
+    },
+    "lookup": {
+      "lookup_my_files": 4,
+      "lookup_team_files": 3,
+      "lookup_my_groups": 2,
+      "lookup_owner_folders": 1
+    },
+    "expand": {
+      "expand_file_viewers": 3,
+      "expand_folder_viewers": 1,
+      "expand_group_chain": 1
+    },
+    "write": {
+      "write_create_file": 3,
+      "write_share": 2,
+      "write_join_group": 1,
+      "write_role_assign": 1
+    }
+  },
+  "depths": {
+    "folder_chain": {
+      "1": 1,
+      "2": 2,
+      "4": 3,
+      "8": 3,
+      "16": 2,
+      "32": 1
+    },
+    "folder_chain_denied": {
+      "1": 1,
+      "2": 1,
+      "4": 1
+    },
+    "group_chain": {
+      "1": 2,
+      "2": 3,
+      "4": 3,
+      "8": 2,
+      "16": 1,
+      "32": 1
+    },
+    "folder_then_group": {
+      "4": 1
+    },
+    "expand_folder_chain": {
+      "1": 1,
+      "2": 1,
+      "4": 1,
+      "8": 1
+    }
+  },
+  "slo": {
+    "check": {
+      "p95_ms": 50
+    },
+    "write": {
+      "p95_ms": 100
+    },
+    "expand": {
+      "p95_ms": 500
+    },
+    "lookup": {
+      "p95_ms": 1000
+    },
+    "error_rate": 0.01,
+    "correct_rate": 0.999
+  }
+}

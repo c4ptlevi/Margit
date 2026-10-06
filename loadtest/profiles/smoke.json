@@ -1,0 +1,126 @@
+{
+  "name": "smoke",
+  "description": "15 s at 20 it/s over every kind; verifies the stack, dataset and expected answers.",
+  "rps": 20,
+  "ramp": "5s",
+  "duration": "15s",
+  "cold_start": false,
+  "lookup_limit": 20,
+  "vus": 100,
+  "max_vus": 600,
+  "resources": {
+    "margit": {
+      "cpus": 1,
+      "memory": "1g",
+      "gomaxprocs": 1,
+      "gomemlimit": "900MiB"
+    },
+    "postgres": {
+      "shared_buffers": "64MB",
+      "effective_cache_size": "256MB",
+      "memory": "384m"
+    }
+  },
+  "popularity": {
+    "workspaces": {
+      "dist": "zipf",
+      "s": 1.0
+    },
+    "chains": {
+      "dist": "zipf",
+      "s": 1.0
+    },
+    "users": {
+      "dist": "zipf",
+      "s": 1.0
+    }
+  },
+  "mix": {
+    "check": 70,
+    "lookup": 5,
+    "expand": 10,
+    "write": 15
+  },
+  "kinds": {
+    "check": {
+      "file_view_l2_group": 1,
+      "file_view_direct": 1,
+      "file_edit_owner": 1,
+      "file_edit_team": 1,
+      "file_edit_role": 1,
+      "file_view_l1": 1,
+      "file_view_role": 1,
+      "file_view_role_group": 1,
+      "file_view_org_admin": 1,
+      "file_view_org_group": 1,
+      "file_share": 1,
+      "file_share_denied": 1,
+      "file_banned": 1,
+      "file_outsider": 1,
+      "cross_workspace": 1,
+      "folder_chain": 1,
+      "folder_chain_denied": 1,
+      "group_chain": 1,
+      "group_chain_denied": 1,
+      "folder_then_group": 1,
+      "too_deep": 1
+    },
+    "lookup": {
+      "lookup_my_files": 4,
+      "lookup_team_files": 3,
+      "lookup_my_groups": 2,
+      "lookup_owner_folders": 1,
+      "lookup_outsider": 1
+    },
+    "expand": {
+      "expand_file_viewers": 1,
+      "expand_folder_viewers": 1,
+      "expand_group_chain": 1,
+      "expand_folder_chain": 1
+    },
+    "write": {
+      "write_create_file": 1,
+      "write_share": 1,
+      "write_join_group": 1,
+      "write_role_assign": 1,
+      "write_join_group_chain": 1,
+      "write_file_in_chain": 1
+    }
+  },
+  "depths": {
+    "folder_chain": {
+      "1": 1,
+      "2": 2,
+      "4": 3,
+      "8": 3,
+      "16": 2,
+      "32": 1
+    },
+    "folder_chain_denied": {
+      "1": 1,
+      "2": 1,
+      "4": 1
+    },
+    "group_chain": {
+      "1": 2,
+      "2": 3,
+      "4": 3,
+      "8": 2,
+      "16": 1,
+      "32": 1
+    },
+    "folder_then_group": {
+      "4": 1
+    },
+    "expand_folder_chain": {
+      "1": 1,
+      "2": 1,
+      "4": 1,
+      "8": 1
+    }
+  },
+  "slo": {
+    "error_rate": 0.01,
+    "correct_rate": 1
+  }
+}
