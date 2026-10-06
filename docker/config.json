@@ -4,12 +4,12 @@
     "type": "${MARGIT_STORE_TYPE}",
     "postgres": {
       "dsn": "${MARGIT_PG_DSN}",
-      "bloom_expected": 1000000,
+      "bloom_expected": ${MARGIT_BLOOM_EXPECTED},
       "bloom_fp_rate": 0.01
     }
   },
   "engine": {
-    "max_depth": 25,
+    "max_depth": ${MARGIT_MAX_DEPTH},
     "lookup_default_limit": 100,
     "lookup_max_limit": 1000
   },

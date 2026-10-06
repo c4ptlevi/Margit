@@ -13,8 +13,9 @@ COPY --from=build /out/margit /app/margit
 COPY docker/config.json /app/config.json
 USER margit
 EXPOSE 8080
-ENV GOMAXPROCS=1 GOMEMLIMIT=900MiB MARGIT_LOG_LEVEL=info MARGIT_STORE_TYPE=memory
-HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
+ENV GOMAXPROCS=1 GOMEMLIMIT=900MiB MARGIT_LOG_LEVEL=info MARGIT_STORE_TYPE=memory \
+    MARGIT_MAX_DEPTH=25 MARGIT_BLOOM_EXPECTED=1000000
+HEALTHCHECK --interval=10s --timeout=3s --start-period=180s --start-interval=2s --retries=3 \
   CMD wget -q -O /dev/null http://127.0.0.1:8080/healthz || exit 1
 ENTRYPOINT ["/app/margit"]
 CMD ["-config", "/app/config.json"]
