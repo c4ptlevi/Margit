@@ -32,14 +32,22 @@ func Open(ctx context.Context, cfg Config, log *logger.Logger) (Store, func(), e
 			log.Error(ctx, "tag_49xr1c", "postgres pool init failed", "err", err)
 			return nil, nil, err
 		}
+		if err := pool.Ping(ctx); err != nil {
+			log.Warn(ctx, "tag_ncm57r", "postgres ping failed, continuing with migration", "err", err)
+		}
 		s, err := NewPostgresStore(ctx, pool, cfg.Postgres, log)
 		if err != nil {
 			pool.Close()
 			return nil, nil, err
 		}
 		log.Info(ctx, "tag_nes74z", "store opened", "type", cfg.Type)
-		return s, pool.Close, nil
+		return s, func() {
+			log.Info(ctx, "tag_r4lego", "postgres pool closing", "total_conns", pool.Stat().TotalConns(), "acquire_count", pool.Stat().AcquireCount())
+			pool.Close()
+		}, nil
 	default:
-		return nil, nil, fmt.Errorf("unknown store type %q", cfg.Type)
+		err := fmt.Errorf("unknown store type %q", cfg.Type)
+		log.Error(ctx, "tag_c9b4np", "store open failed", "err", err)
+		return nil, nil, err
 	}
 }
