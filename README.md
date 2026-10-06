@@ -150,7 +150,9 @@ Findings:
 - Capacity at p95 < 50 ms (cold, margit 1 CPU): **~300 req/s** for the Drive mix (240 checks/s + 16 write
   flows/s; 2-min run p95 44.8 ms, p99 105 ms, 0 errors). margit reaches ~0.9 core and Postgres ~1.1 cores. At
   255 checks/s p95 is 64 ms; at 270 checks/s margit hits 1 core and p95 jumps to 405 ms. The simple
-    `margit.js` mix (1–2 hop docs) holds ~750 req/s on the same 4.6M-tuple database.
+    `margit.js` mix (1–2 hop docs) on the same 4.6M-tuple database, measured server-side over the 40 s
+    plateau: 750 req/s → p95 4.5 ms (0.84 core); 900 → 21 ms; 1,011 → 47 ms (0.96 core, knee); 1,066 → 54 ms.
+    Lookup alone crosses 50 ms p95 at ~750 req/s (48.5 ms) and reaches 458 ms at 1,011.
 - Latency is dominated by sequential SQL round trips, not I/O: ~25 `SELECT`s per check at ~46 µs
   server time each. Cold vs hot differs by 5–15%; even a 16 MB buffer pool keeps a 98.9% hit ratio
   because B-tree inner pages stay cached (and the WSL vhdx is cached by the host).
