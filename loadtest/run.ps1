@@ -10,7 +10,8 @@ param(
     [int]$Step = 10,
     [double]$CheckP95Ms,
     [string]$Ramp,
-    [int]$CacheTtlMs = -1
+    [int]$CacheTtlMs = -1,
+    [int]$QueryCacheTtlMs = -1
 )
 
 $ErrorActionPreference = "Continue"
@@ -77,13 +78,18 @@ $env:MARGIT_GOMEMLIMIT = "$($r.margit.gomemlimit)"
 $cacheTtl = if ($CacheTtlMs -ge 0) { $CacheTtlMs } elseif ($r.margit.cache_ttl_ms) { [int]$r.margit.cache_ttl_ms } else { 0 }
 $env:MARGIT_CACHE_TTL_MS = "$cacheTtl"
 $env:MARGIT_CACHE_MAX_ENTRIES = if ($r.margit.cache_max_entries) { "$($r.margit.cache_max_entries)" } else { "1000000" }
-$tag = if ($cacheTtl -gt 0) { "$profileName-cache$($cacheTtl)ms" } else { $profileName }
+$queryCacheTtl = if ($QueryCacheTtlMs -ge 0) { $QueryCacheTtlMs } elseif ($r.margit.query_cache_ttl_ms) { [int]$r.margit.query_cache_ttl_ms } else { 0 }
+$env:MARGIT_QUERY_CACHE_TTL_MS = "$queryCacheTtl"
+$env:MARGIT_QUERY_CACHE_MAX_ENTRIES = if ($r.margit.query_cache_max_entries) { "$($r.margit.query_cache_max_entries)" } else { "500000" }
+$tag = $profileName
+if ($cacheTtl -gt 0) { $tag += "-cache$($cacheTtl)ms" }
+if ($queryCacheTtl -gt 0) { $tag += "-qcache$($queryCacheTtl)ms" }
 $env:PG_SHARED_BUFFERS = "$($r.postgres.shared_buffers)"
 $env:PG_EFFECTIVE_CACHE_SIZE = "$($r.postgres.effective_cache_size)"
 $env:PG_MEM_LIMIT = "$($r.postgres.memory)"
 
 if (-not $NoUp) {
-    Write-Host "==> compose up (margit $($env:MARGIT_CPUS) CPU / $($env:MARGIT_MEM), cache ttl $cacheTtl ms, postgres buffers $($env:PG_SHARED_BUFFERS) / $($env:PG_MEM_LIMIT))"
+    Write-Host "==> compose up (margit $($env:MARGIT_CPUS) CPU / $($env:MARGIT_MEM), response cache ttl $cacheTtl ms, query cache ttl $queryCacheTtl ms, postgres buffers $($env:PG_SHARED_BUFFERS) / $($env:PG_MEM_LIMIT))"
     docker compose up -d --wait 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "docker compose up failed" }
 }
@@ -141,7 +147,8 @@ function Invoke-Run([int]$rate) {
         pg_statements_ps = Get-PromValue "sum(rate(margit_statements_calls$w))" $at
         pg_stmt_mean_us  = Get-PromValue "sum(rate(margit_statements_exec_seconds$w)) / sum(rate(margit_statements_calls$w)) * 1e6" $at
         server_rps       = Get-PromValue "sum(rate(margit_http_requests_total{route=~`"/v1/.*`"}$w))" $at
-        cache_hit_ratio  = Get-PromValue "sum(rate(margit_cache_hits_total$w)) / (sum(rate(margit_cache_hits_total$w)) + sum(rate(margit_cache_misses_total$w)))" $at
+        cache_hit_ratio  = Get-PromValue "sum(rate(margit_cache_hits_total{cache=`"response`"}$w)) / (sum(rate(margit_cache_hits_total{cache=`"response`"}$w)) + sum(rate(margit_cache_misses_total{cache=`"response`"}$w)))" $at
+        qcache_hit_ratio = Get-PromValue "sum(rate(margit_cache_hits_total{cache=`"query`"}$w)) / (sum(rate(margit_cache_hits_total{cache=`"query`"}$w)) + sum(rate(margit_cache_misses_total{cache=`"query`"}$w)))" $at
         server_p95_ms    = Get-PromValue "histogram_quantile(0.95, sum by (le) (rate(margit_http_request_duration_seconds_bucket{route=~`"/v1/.*`"}$w))) * 1000" $at
     }
     $io = Invoke-Psql "select blks_hit || ',' || blks_read from pg_stat_database where datname='margit'"
@@ -154,7 +161,7 @@ function Invoke-Run([int]$rate) {
     if (-not $pass) { $failed = $true }
     $report = [ordered]@{
         run = $runId; profile = $profileName; commit = $commit; rps_target = $rate; hold = $hold; cold_start = $cold
-        cache_ttl_ms = $cacheTtl; resources = $cfg.resources; dataset_tuples = $count; result = if ($pass) { "PASS" } else { "FAIL" }
+        cache_ttl_ms = $cacheTtl; query_cache_ttl_ms = $queryCacheTtl; resources = $cfg.resources; dataset_tuples = $count; result = if ($pass) { "PASS" } else { "FAIL" }
         breached = @($k6.breached); k6_exit = $k6Exit; ops = $k6.ops; total = $k6.total; resources_observed = $res
     }
     $report | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 (Join-Path $results "$runId.json")
@@ -164,7 +171,7 @@ function Invoke-Run([int]$rate) {
         "- profile: ``$profileName`` ($($cfg.description))",
         "- commit: ``$commit``, dataset: $count tuples, cold start: $cold",
         "- target: $rate it/s, ramp $ramp, hold $hold",
-        "- margit: $($r.margit.cpus) CPU / $($r.margit.memory), response cache ttl $cacheTtl ms; postgres: shared_buffers $($r.postgres.shared_buffers), limit $($r.postgres.memory)",
+        "- margit: $($r.margit.cpus) CPU / $($r.margit.memory), response cache ttl $cacheTtl ms, query cache ttl $queryCacheTtl ms; postgres: shared_buffers $($r.postgres.shared_buffers), limit $($r.postgres.memory)",
         "- result: **$($report.result)**$(if (-not $pass) { ' (' + ($k6.breached -join ', ') + ')' })", "",
         "| op | n | p95 ms | p99 ms | SLO |", "|---|---|---|---|---|"
     )
@@ -181,7 +188,7 @@ function Invoke-Run([int]$rate) {
     $md += "| postgres TPS / statements per s | $(Fmt $res.pg_tps 'N0') / $(Fmt $res.pg_statements_ps 'N0') |"
     $md += "| statement mean exec (us) | $(Fmt $res.pg_stmt_mean_us) |"
     $md += "| buffer cache hit ratio / blocks read | $(Fmt ($res.pg_hit_ratio * 100) 'N2')% / $($res.pg_blocks_read) |"
-    $md += "| response cache hit ratio | $(Fmt ($res.cache_hit_ratio * 100) 'N2')% |"
+    $md += "| response / query cache hit ratio | $(Fmt ($res.cache_hit_ratio * 100) 'N2')% / $(Fmt ($res.qcache_hit_ratio * 100) 'N2')% |"
     $md += "| server req/s / p95 ms | $(Fmt $res.server_rps) / $(Fmt $res.server_p95_ms) |"
     $md += "", '```', (($out | Where-Object { $_ -notmatch 'level=' }) -join "`n").Trim(), '```'
     $md -join "`n" | Set-Content -Encoding utf8 (Join-Path $results "$runId.md")
@@ -191,6 +198,7 @@ function Invoke-Run([int]$rate) {
         check_p95 = Fmt $k6.ops.check.p95; lookup_p95 = Fmt $k6.ops.lookup.p95; expand_p95 = Fmt $k6.ops.expand.p95; write_p95 = Fmt $k6.ops.write.p95
         p99 = Fmt $t.p99; dropped = $t.dropped; margit_cpu = Fmt $res.margit_cpu_avg 'N2'; pg_cpu = Fmt $res.postgres_cpu_avg 'N2'
         hit = Fmt ($res.pg_hit_ratio * 100) 'N2'; cache_hit = Fmt ($res.cache_hit_ratio * 100) 'N1'
+        qcache_hit = Fmt ($res.qcache_hit_ratio * 100) 'N1'
     }
     $healthy = ($t.failed -le 0.01) -and ($t.dropped -le [math]::Max(5, $t.reqs * 0.005)) -and ($t.correct -ge 0.999)
     $row | Add-Member NoteProperty check_p95_ms $k6.ops.check.p95
@@ -200,7 +208,7 @@ function Invoke-Run([int]$rate) {
     $row
 }
 
-$cols = "rps", "req_s", "result", "check_p95", "lookup_p95", "expand_p95", "write_p95", "p99", "dropped", "margit_cpu", "pg_cpu", "hit", "cache_hit"
+$cols = "rps", "req_s", "result", "check_p95", "lookup_p95", "expand_p95", "write_p95", "p99", "dropped", "margit_cpu", "pg_cpu", "hit", "cache_hit", "qcache_hit"
 $maxLine = ""
 if ($FindMax) {
     $limit = if ($CheckP95Ms) { $CheckP95Ms } elseif ($cfg.slo.check.p95_ms) { [double]$cfg.slo.check.p95_ms } else { 50 }

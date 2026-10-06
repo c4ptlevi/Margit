@@ -6,6 +6,10 @@
       "dsn": "${MARGIT_PG_DSN}",
       "bloom_expected": ${MARGIT_BLOOM_EXPECTED},
       "bloom_fp_rate": 0.01
+    },
+    "query_cache": {
+      "ttl_ms": ${MARGIT_QUERY_CACHE_TTL_MS},
+      "max_entries": ${MARGIT_QUERY_CACHE_MAX_ENTRIES}
     }
   },
   "engine": {
