@@ -6,6 +6,7 @@ const USERS = 1000;
 const GROUPS = 50;
 const DOCS = 2000;
 const PEAK_CHECK_RPS = Number(__ENV.PEAK_CHECK_RPS || 1000);
+const LOOKUP_LIMIT = Number(__ENV.LOOKUP_LIMIT || 20);
 const JSON_HDR = { headers: { "Content-Type": "application/json" } };
 
 const rand = (n) => Math.floor(Math.random() * n);
@@ -115,8 +116,11 @@ export function expandRelation() {
 export function lookupObjects() {
   const r = post(
     "/v1/lookup",
-    { subject: `user:u${rand(USERS)}`, relation: "viewer", namespace: "doc" },
+    { subject: `user:u${rand(USERS)}`, relation: "viewer", namespace: "doc", limit: LOOKUP_LIMIT },
     { name: "lookup" },
   );
-  check(r, { "lookup 200": (x) => x.status === 200 });
+  check(r, {
+    "lookup 200": (x) => x.status === 200,
+    "lookup within limit": (x) => x.status !== 200 || x.json("objects").length <= LOOKUP_LIMIT,
+  });
 }
