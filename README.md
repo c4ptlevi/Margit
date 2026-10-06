@@ -27,6 +27,26 @@ $env:MARGIT_PG_DSN = 'postgres://postgres:margit@localhost:55432/margit?sslmode=
 Set `"store": {"type": "postgres"}` in the config file (or a copy passed with `-config`) and start
 `bin\margit.exe`. Tables are created on startup.
 
+### With Docker
+
+```powershell
+docker compose up -d --build
+docker compose logs -f margit
+docker compose down        # add -v to drop the Postgres volume
+```
+
+Starts margit on `localhost:8080` backed by a Postgres container. The margit container is limited to
+1 CPU and 1 GiB memory (no swap), with `GOMAXPROCS=1` and `GOMEMLIMIT=900MiB` so the Go runtime stays
+inside that budget. The image uses `docker/config.json`, driven by environment variables:
+
+| Variable | Default in image | Compose value |
+|---|---|---|
+| `MARGIT_STORE_TYPE` | `memory` | `postgres` |
+| `MARGIT_LOG_LEVEL` | `info` | `info` |
+| `MARGIT_PG_DSN` | — | `postgres://margit:margit@postgres:5432/margit?sslmode=disable` |
+
+Standalone in-memory: `docker run --rm --cpus 1 --memory 1g -p 8080:8080 margit:latest`.
+
 ## Configuration
 
 `config.json` (path set with `-config`). `${VAR}` is expanded from the environment; unknown fields are rejected.
@@ -157,3 +177,4 @@ $env:MARGIT_PG_DSN = '...'; go test -count=1 -p 1 ./...        # also run store/
 | `logger/` | Leveled logger, trace ids |
 | `config/` | Config file loading |
 | `cmd/tagger/` | Log tag filler/checker |
+| `Dockerfile`, `docker-compose.yml`, `docker/` | Container image, compose stack, container config |
