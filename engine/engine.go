@@ -13,7 +13,11 @@ import (
 	"github.com/c4ptlevi/margit/store"
 )
 
-const DefaultMaxDepth = 25
+const (
+	DefaultMaxDepth       = 25
+	DefaultLookupLimit    = 100
+	DefaultMaxLookupLimit = 1000
+)
 
 type ReBACEngine interface {
 	SaveNamespace(ctx context.Context, ns model.Namespace) error
@@ -24,20 +28,29 @@ type ReBACEngine interface {
 	DeleteTuples(ctx context.Context, tuples []model.RelationTuple) error
 	Check(ctx context.Context, obj model.Entity, relation string, sub model.Entity) (bool, error)
 	Expand(ctx context.Context, obj model.Entity, relation string) ([]model.Entity, error)
-	Lookup(ctx context.Context, sub model.Entity, relation string, namespace string) ([]model.Entity, error)
+	Lookup(ctx context.Context, sub model.Entity, relation string, namespace string, page Page) ([]model.Entity, string, error)
 }
 
 type Config struct {
-	MaxDepth int `json:"max_depth"`
+	MaxDepth       int `json:"max_depth"`
+	LookupLimit    int `json:"lookup_default_limit"`
+	MaxLookupLimit int `json:"lookup_max_limit"`
+}
+
+type Page struct {
+	After string
+	Limit int
 }
 
 var _ ReBACEngine = (*Engine)(nil)
 
 type Engine struct {
-	store    store.Store
-	exprs    ExprCache
-	maxDepth int
-	log      *logger.Logger
+	store          store.Store
+	exprs          ExprCache
+	maxDepth       int
+	lookupLimit    int
+	maxLookupLimit int
+	log            *logger.Logger
 }
 
 func New(st store.Store, exprs ExprCache, cfg Config, log *logger.Logger) *Engine {
@@ -47,7 +60,21 @@ func New(st store.Store, exprs ExprCache, cfg Config, log *logger.Logger) *Engin
 	if cfg.MaxDepth <= 0 {
 		cfg.MaxDepth = DefaultMaxDepth
 	}
-	return &Engine{store: st, exprs: exprs, maxDepth: cfg.MaxDepth, log: log}
+	if cfg.MaxLookupLimit <= 0 {
+		cfg.MaxLookupLimit = DefaultMaxLookupLimit
+	}
+	if cfg.LookupLimit <= 0 {
+		cfg.LookupLimit = DefaultLookupLimit
+	}
+	cfg.LookupLimit = min(cfg.LookupLimit, cfg.MaxLookupLimit)
+	return &Engine{
+		store:          st,
+		exprs:          exprs,
+		maxDepth:       cfg.MaxDepth,
+		lookupLimit:    cfg.LookupLimit,
+		maxLookupLimit: cfg.MaxLookupLimit,
+		log:            log,
+	}
 }
 
 func (e *Engine) SaveNamespace(ctx context.Context, ns model.Namespace) error {
@@ -173,15 +200,23 @@ func (e *Engine) Expand(ctx context.Context, obj model.Entity, relation string) 
 	return out, nil
 }
 
-func (e *Engine) Lookup(ctx context.Context, sub model.Entity, relation string, namespace string) ([]model.Entity, error) {
+func (e *Engine) Lookup(ctx context.Context, sub model.Entity, relation string, namespace string, page Page) ([]model.Entity, string, error) {
 	start := time.Now()
 	if err := sub.Validate(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
+	if page.Limit < 0 {
+		return nil, "", fmt.Errorf("%w: %d", model.ErrInvalidLimit, page.Limit)
+	}
+	limit := page.Limit
+	if limit == 0 {
+		limit = e.lookupLimit
+	}
+	limit = min(limit, e.maxLookupLimit)
 	r := e.newRequest()
 	if _, err := r.relation(ctx, namespace, relation); err != nil {
 		e.log.Debug(ctx, "tag_de91dd", "lookup rejected", "err", err)
-		return nil, err
+		return nil, "", err
 	}
 	l := &lookup{request: r, sub: sub, memo: map[nsRel]entitySet{}, active: map[nsRel]bool{}}
 	var candidates entitySet
@@ -190,7 +225,7 @@ func (e *Engine) Lookup(ctx context.Context, sub model.Entity, relation string, 
 		set, err := l.candidates(ctx, namespace, relation, 0)
 		if err != nil {
 			e.log.Warn(ctx, "tag_kr46bk", "lookup failed", "subject", sub, "relation", relation, "namespace", namespace, "err", err)
-			return nil, err
+			return nil, "", err
 		}
 		if !l.changed {
 			candidates = set
@@ -198,19 +233,33 @@ func (e *Engine) Lookup(ctx context.Context, sub model.Entity, relation string, 
 		}
 	}
 	var out []model.Entity
+	checked := 0
 	for _, obj := range candidates.sorted() {
+		if obj.ID <= page.After {
+			continue
+		}
+		checked++
 		ok, err := r.check(ctx, obj, relation, sub, 0)
 		if err != nil {
 			e.log.Warn(ctx, "tag_43nxj0", "lookup failed", "subject", sub, "relation", relation, "namespace", namespace, "err", err)
-			return nil, err
+			return nil, "", err
 		}
 		if ok {
 			out = append(out, obj)
+			if len(out) > limit {
+				break
+			}
 		}
 	}
+	next := ""
+	if len(out) > limit {
+		out = out[:limit]
+		next = out[limit-1].ID
+	}
 	e.log.Debug(ctx, "tag_ivh9li", "lookup done", "subject", sub, "relation", relation, "namespace", namespace,
-		"candidates", len(candidates), "count", len(out), "took", time.Since(start))
-	return out, nil
+		"after", page.After, "limit", limit, "candidates", len(candidates), "checked", checked, "count", len(out),
+		"more", next != "", "took", time.Since(start))
+	return out, next, nil
 }
 
 type edge struct {

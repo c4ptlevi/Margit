@@ -193,12 +193,13 @@ func (s *Server) lookup(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &body) {
 		return
 	}
-	objects, err := s.engine.Lookup(r.Context(), parseEntity(body.Subject), body.Relation, body.Namespace)
+	objects, next, err := s.engine.Lookup(r.Context(), parseEntity(body.Subject), body.Relation, body.Namespace,
+		engine.Page{After: body.Cursor, Limit: body.Limit})
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, lookupResponse{Objects: entityStrings(objects)})
+	writeJSON(w, http.StatusOK, lookupResponse{Objects: entityStrings(objects), NextCursor: next})
 }
 
 type badRequestError struct{ err error }

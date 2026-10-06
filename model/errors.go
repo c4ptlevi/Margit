@@ -19,6 +19,7 @@ const (
 	ErrSubjectTypeNotAllowed
 	ErrMaxDepthExceeded
 	ErrNamespaceInUse
+	ErrInvalidLimit
 )
 
 var errorText = map[Error]string{
@@ -38,6 +39,7 @@ var errorText = map[Error]string{
 	ErrSubjectTypeNotAllowed: "subject type not allowed",
 	ErrMaxDepthExceeded:      "max evaluation depth exceeded",
 	ErrNamespaceInUse:        "namespace is referenced by another namespace",
+	ErrInvalidLimit:          "limit must not be negative",
 }
 
 func (e Error) Error() string {

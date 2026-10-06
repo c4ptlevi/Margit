@@ -29,7 +29,11 @@ func Default() Config {
 				BloomFPRate:   0.01,
 			},
 		},
-		Engine: engine.Config{MaxDepth: engine.DefaultMaxDepth},
+		Engine: engine.Config{
+			MaxDepth:       engine.DefaultMaxDepth,
+			LookupLimit:    engine.DefaultLookupLimit,
+			MaxLookupLimit: engine.DefaultMaxLookupLimit,
+		},
 		Server: api.DefaultConfig(),
 	}
 }

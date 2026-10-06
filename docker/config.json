@@ -9,7 +9,9 @@
     }
   },
   "engine": {
-    "max_depth": 25
+    "max_depth": 25,
+    "lookup_default_limit": 100,
+    "lookup_max_limit": 1000
   },
   "server": {
     "addr": ":8080",

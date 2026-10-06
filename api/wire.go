@@ -67,6 +67,8 @@ type lookupBody struct {
 	Subject   string `json:"subject"`
 	Relation  string `json:"relation"`
 	Namespace string `json:"namespace"`
+	Limit     int    `json:"limit"`
+	Cursor    string `json:"cursor"`
 }
 
 type checkResponse struct {
@@ -78,7 +80,8 @@ type expandResponse struct {
 }
 
 type lookupResponse struct {
-	Objects []string `json:"objects"`
+	Objects    []string `json:"objects"`
+	NextCursor string   `json:"next_cursor,omitempty"`
 }
 
 type errorBody struct {

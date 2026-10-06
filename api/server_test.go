@@ -99,9 +99,32 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	b := mustStatus(t, ts, "POST", "/v1/lookup", `{"subject":"user:zoe","relation":"viewer","namespace":"document"}`, 200)
-	if !bytes.Contains(b, []byte(`"objects":[]`)) {
-		t.Errorf("empty lookup = %s, want empty array", b)
+	if !bytes.Contains(b, []byte(`"objects":[]`)) || bytes.Contains(b, []byte("next_cursor")) {
+		t.Errorf("empty lookup = %s, want empty array and no cursor", b)
 	}
+
+	mustStatus(t, ts, "POST", "/v1/tuples", `{"tuples":[
+		{"object":"document:a","relation":"owner","subject":"user:bob"},
+		{"object":"document:b","relation":"owner","subject":"user:bob"}
+	]}`, 204)
+	var all []string
+	cursor := ""
+	for range 5 {
+		var page lookupResponse
+		json.Unmarshal(mustStatus(t, ts, "POST", "/v1/lookup",
+			`{"subject":"user:bob","relation":"viewer","namespace":"document","limit":2,"cursor":"`+cursor+`"}`, 200), &page)
+		if len(page.Objects) > 2 {
+			t.Fatalf("page size %d > limit 2", len(page.Objects))
+		}
+		all = append(all, page.Objects...)
+		if cursor = page.NextCursor; cursor == "" {
+			break
+		}
+	}
+	if !slices.Equal(all, []string{"document:a", "document:b", "document:readme"}) {
+		t.Errorf("paged lookup = %v", all)
+	}
+	mustStatus(t, ts, "POST", "/v1/lookup", `{"subject":"user:bob","relation":"viewer","namespace":"document","limit":-1}`, 400)
 
 	mustStatus(t, ts, "POST", "/v1/tuples/delete", `{"tuples":[{"object":"document:readme","relation":"banned","subject":"user:dave"}]}`, 204)
 	b = mustStatus(t, ts, "POST", "/v1/check", `{"object":"document:readme","relation":"viewer","subject":"user:dave"}`, 200)

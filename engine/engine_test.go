@@ -213,7 +213,7 @@ func TestLookup(t *testing.T) {
 		{"user:zoe", "viewer", "document", nil},
 	}
 	for _, c := range cases {
-		got, err := e.Lookup(ctx, ent(c.sub), c.rel, c.namespace)
+		got, _, err := e.Lookup(ctx, ent(c.sub), c.rel, c.namespace, Page{})
 		if err != nil {
 			t.Errorf("Lookup(%s, %s, %s): %v", c.sub, c.rel, c.namespace, err)
 			continue
@@ -222,8 +222,68 @@ func TestLookup(t *testing.T) {
 			t.Errorf("Lookup(%s, %s, %s) = %v, want %v", c.sub, c.rel, c.namespace, names(got), c.want)
 		}
 	}
-	if _, err := e.Lookup(ctx, ent("user:bob"), "viewer", "widget"); !errors.Is(err, model.ErrUnknownNamespace) {
+	if _, _, err := e.Lookup(ctx, ent("user:bob"), "viewer", "widget", Page{}); !errors.Is(err, model.ErrUnknownNamespace) {
 		t.Errorf("Lookup unknown namespace err = %v", err)
+	}
+}
+
+func TestLookupPagination(t *testing.T) {
+	e := newTestEngine(t, Config{LookupLimit: 2, MaxLookupLimit: 3}, nil)
+	ctx := context.Background()
+	if err := e.SaveNamespace(ctx, model.Namespace{Name: "item", Relations: map[string]model.Relation{
+		"owner":  {Name: "owner", AllowedTypes: []string{"user"}},
+		"banned": {Name: "banned", AllowedTypes: []string{"user"}},
+		"viewer": {Name: "viewer", RelExpr: "owner - banned"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	var tuples []model.RelationTuple
+	for _, id := range []string{"a", "b", "c", "d", "e", "f", "g"} {
+		tuples = append(tuples, model.RelationTuple{Object: ent("item:" + id), Relation: "owner", Subject: ent("user:pat")})
+	}
+	tuples = append(tuples, model.RelationTuple{Object: ent("item:c"), Relation: "banned", Subject: ent("user:pat")})
+	if err := e.WriteTuples(ctx, tuples); err != nil {
+		t.Fatal(err)
+	}
+
+	pages := func(limit int) [][]string {
+		var out [][]string
+		page := Page{Limit: limit}
+		for range 10 {
+			got, next, err := e.Lookup(ctx, ent("user:pat"), "viewer", "item", page)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, names(got))
+			if next == "" {
+				return out
+			}
+			page.After = next
+		}
+		t.Fatal("pagination did not terminate")
+		return nil
+	}
+	cases := []struct {
+		limit int
+		want  [][]string
+	}{
+		{0, [][]string{{"item:a", "item:b"}, {"item:d", "item:e"}, {"item:f", "item:g"}}},
+		{1, [][]string{{"item:a"}, {"item:b"}, {"item:d"}, {"item:e"}, {"item:f"}, {"item:g"}}},
+		{6, [][]string{{"item:a", "item:b", "item:d"}, {"item:e", "item:f", "item:g"}}},
+		{100, [][]string{{"item:a", "item:b", "item:d"}, {"item:e", "item:f", "item:g"}}},
+	}
+	for _, c := range cases {
+		if got := pages(c.limit); !slices.EqualFunc(got, c.want, slices.Equal) {
+			t.Errorf("limit %d pages = %v, want %v", c.limit, got, c.want)
+		}
+	}
+
+	got, next, err := e.Lookup(ctx, ent("user:pat"), "viewer", "item", Page{After: "g"})
+	if err != nil || len(got) != 0 || next != "" {
+		t.Errorf("after last = %v, %q, %v", names(got), next, err)
+	}
+	if _, _, err := e.Lookup(ctx, ent("user:pat"), "viewer", "item", Page{Limit: -1}); !errors.Is(err, model.ErrInvalidLimit) {
+		t.Errorf("negative limit err = %v", err)
 	}
 }
 
