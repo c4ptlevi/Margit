@@ -196,13 +196,21 @@ flowchart TD
     d -->|Exclusion| ex[base only - superset]
     rev & cr & ar & un & inn & ex --> fix{any memo entry<br/>grew this pass?}
     fix -->|yes: recursive schema,<br/>e.g. parent->viewer| cand
-    fix -->|no: fixpoint| filter[for each candidate:<br/>Check obj#rel@sub]
-    filter --> out([sorted objects])
+    fix -->|no: fixpoint| filter[sorted candidates with id > cursor:<br/>Check obj#rel@sub<br/>stop at limit + 1 allowed]
+    filter --> out([page of objects<br/>+ next_cursor if more])
 ```
 
 Candidates are a **superset**: exclusion keeps only its base, and intersections combine supersets.
 The final Check filters it down. Recursive schemas such as nested folders are handled by memoising each
 `(namespace, relation)` result and repeating the pass until nothing changes.
+
+Lookup is paginated with a keyset cursor on object id. Candidates are sorted, those with id
+`<= cursor` are skipped, and the per-candidate Check stops once `limit + 1` objects are allowed. The
+extra object only signals that another page exists, and `next_cursor` is the last returned id. The
+candidate pass still runs in full on every page; only the Check phase is cut short. Writes between
+pages do not cause duplicates, but objects added before the cursor are not seen. `limit` 0 uses
+`engine.lookup_default_limit`, larger values are capped at `engine.lookup_max_limit`, and negative
+values are rejected.
 
 ## Postgres store and bloom filter
 
@@ -287,5 +295,5 @@ percentiles and CPU/memory against the 1 CPU / 1 GiB container budget.
 | Multiple instances | Each process has its own bloom filter; writes from another instance are not added to it, so it can wrongly deny. Run one writer, or disable the filter (`bloom_expected: 0`). |
 | Consistency | No snapshot tokens ("zookies"); a read sees whatever the store has committed. |
 | Schema changes | Updating a namespace does not check whether other namespaces' arrows still resolve; missing references evaluate as empty. Deleting a namespace keeps its tuples. |
-| Lookup cost | Grows with fixpoint passes and candidate count; no pagination on Expand/Lookup. |
+| Lookup cost | The candidate pass grows with fixpoint passes and candidate count and runs in full on every page; no pagination on Expand. |
 | Security | No authentication or rate limiting on the HTTP API. |

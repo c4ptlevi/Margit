@@ -62,19 +62,19 @@ docker compose run --rm -e PEAK_CHECK_RPS=2000 k6       # push harder
 
 `loadtest/margit.js` seeds 1,000 users, 50 groups and 2,000 docs (~5,200 tuples), then ramps
 open-model arrival rates over ~2 min: checks to `PEAK_CHECK_RPS`, writes and expands at 1/20 of it,
-lookups at 1/100. Thresholds: <1% errors, check p95 <100 ms / p99 <250 ms. Watch the Grafana
-dashboard while it runs.
+lookups at 1/100 (page size `LOOKUP_LIMIT`, default 20). Thresholds: <1% errors, check p95 <100 ms /
+p99 <250 ms. Watch the Grafana dashboard while it runs.
 
-Result on the 1 CPU / 1 GiB container with Postgres (default settings):
+Result on the 1 CPU / 1 GiB container with Postgres (default settings, 1,110 req/s peak, 0 errors,
+no dropped iterations, ~30 MiB RSS):
 
-| | Value |
-|---|---|
-| Peak throughput | 1,110 req/s, 0 errors, no dropped iterations |
-| Check | p95 13.7 ms, p99 39.6 ms |
-| Write / Expand | p95 11.3 ms / 14.6 ms |
-| Lookup | p95 215 ms, p99 498 ms |
-| Margit CPU at peak | 0.96 core (saturated) |
-| Margit memory at peak | 30 MiB RSS |
+| | Unpaginated lookup | Lookup `limit: 20` |
+|---|---|---|
+| Check p95 / p99 | 13.7 / 39.6 ms | 4.2 / 14.1 ms |
+| Write p95 | 11.3 ms | 5.0 ms |
+| Expand p95 | 14.6 ms | 5.0 ms |
+| Lookup p95 / p99 | 215 / 498 ms | 42 / 102 ms |
+| Margit CPU at peak | 0.96 core | 0.93 core |
 
 ## Configuration
 
@@ -88,6 +88,8 @@ Result on the 1 CPU / 1 GiB container with Postgres (default settings):
 | `store.postgres.bloom_expected` | `1000000` | Expected keys in the bloom filter; `0` disables it |
 | `store.postgres.bloom_fp_rate` | `0.01` | Target bloom false-positive rate |
 | `engine.max_depth` | `25` | Max relation nesting depth per evaluation |
+| `engine.lookup_default_limit` | `100` | Lookup page size when the request omits `limit` |
+| `engine.lookup_max_limit` | `1000` | Upper bound on lookup `limit` (larger values are capped) |
 | `server.addr` | `:8080` | Listen address |
 | `server.read_timeout` / `write_timeout` | `10s` / `30s` | HTTP timeouts |
 | `server.shutdown_timeout` | `15s` | Time allowed for in-flight requests on shutdown |
@@ -144,7 +146,7 @@ Entities are written as `namespace:id`. Request bodies are JSON (max 1 MB, unkno
 | POST | `/v1/tuples/delete` | same as above | `204` |
 | POST | `/v1/check` | `{"object","relation","subject"}` | `200 {"allowed":bool}` |
 | POST | `/v1/expand` | `{"object","relation"}` | `200 {"subjects":[...]}` |
-| POST | `/v1/lookup` | `{"subject","relation","namespace"}` | `200 {"objects":[...]}` |
+| POST | `/v1/lookup` | `{"subject","relation","namespace","limit"?,"cursor"?}` | `200 {"objects":[...],"next_cursor"?}`; pass `next_cursor` back as `cursor` for the next page (absent on the last page) |
 
 Errors return `{"error": "...", "trace_id": "..."}`:
 
