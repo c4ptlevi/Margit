@@ -53,6 +53,29 @@ inside that budget. The image uses `docker/config.json`, driven by environment v
 
 Standalone in-memory: `docker run --rm --cpus 1 --memory 1g -p 8080:8080 margit:latest`.
 
+### Load test (k6)
+
+```powershell
+docker compose run --rm k6                              # peak 1000 check/s
+docker compose run --rm -e PEAK_CHECK_RPS=2000 k6       # push harder
+```
+
+`loadtest/margit.js` seeds 1,000 users, 50 groups and 2,000 docs (~5,200 tuples), then ramps
+open-model arrival rates over ~2 min: checks to `PEAK_CHECK_RPS`, writes and expands at 1/20 of it,
+lookups at 1/100. Thresholds: <1% errors, check p95 <100 ms / p99 <250 ms. Watch the Grafana
+dashboard while it runs.
+
+Result on the 1 CPU / 1 GiB container with Postgres (default settings):
+
+| | Value |
+|---|---|
+| Peak throughput | 1,110 req/s, 0 errors, no dropped iterations |
+| Check | p95 13.7 ms, p99 39.6 ms |
+| Write / Expand | p95 11.3 ms / 14.6 ms |
+| Lookup | p95 215 ms, p99 498 ms |
+| Margit CPU at peak | 0.96 core (saturated) |
+| Margit memory at peak | 30 MiB RSS |
+
 ## Configuration
 
 `config.json` (path set with `-config`). `${VAR}` is expanded from the environment; unknown fields are rejected.
@@ -185,3 +208,4 @@ $env:MARGIT_PG_DSN = '...'; go test -count=1 -p 1 ./...        # also run store/
 | `config/` | Config file loading |
 | `cmd/tagger/` | Log tag filler/checker |
 | `Dockerfile`, `docker-compose.yml`, `docker/` | Container image, compose stack, container config, Prometheus/Grafana provisioning |
+| `loadtest/` | k6 load test script |
