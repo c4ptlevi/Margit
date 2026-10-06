@@ -9,3 +9,4 @@ Dockerfile
 .dockerignore
 docker/prometheus
 docker/grafana
+loadtest

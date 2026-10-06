@@ -67,6 +67,18 @@ services:
       - prometheus
     restart: unless-stopped
 
+  k6:
+    image: grafana/k6:2.3.0
+    profiles: ["loadtest"]
+    environment:
+      BASE_URL: http://margit:8080
+    volumes:
+      - ./loadtest:/scripts:ro
+    command: ["run", "/scripts/margit.js"]
+    depends_on:
+      margit:
+        condition: service_healthy
+
 volumes:
   pgdata:
   promdata:
