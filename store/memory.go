@@ -45,11 +45,12 @@ func (s *MemoryStore) SaveNamespace(ctx context.Context, ns model.Namespace) err
 	return nil
 }
 
-func (s *MemoryStore) GetNamespace(_ context.Context, name string) (model.Namespace, error) {
+func (s *MemoryStore) GetNamespace(ctx context.Context, name string) (model.Namespace, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	ns, ok := s.namespaces[name]
 	if !ok {
+		s.log.Debug(ctx, "tag_2uyc9e", "namespace not found", "namespace", name)
 		return model.Namespace{}, fmt.Errorf("%w: namespace %q", model.ErrNotFound, name)
 	}
 	return cloneNamespace(ns), nil
@@ -71,6 +72,7 @@ func (s *MemoryStore) DeleteNamespace(ctx context.Context, name string) error {
 	delete(s.namespaces, name)
 	s.mu.Unlock()
 	if !ok {
+		s.log.Debug(ctx, "tag_uiqzzo", "namespace delete found nothing", "namespace", name)
 		return fmt.Errorf("%w: namespace %q", model.ErrNotFound, name)
 	}
 	s.log.Debug(ctx, "tag_19nksa", "namespace deleted", "namespace", name)
@@ -113,7 +115,7 @@ func (s *MemoryStore) DeleteTuples(ctx context.Context, tuples []model.RelationT
 	return nil
 }
 
-func (s *MemoryStore) ReadTuples(_ context.Context, obj model.Entity, relation string) ([]model.RelationTuple, error) {
+func (s *MemoryStore) ReadTuples(ctx context.Context, obj model.Entity, relation string) ([]model.RelationTuple, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	subjects := s.forward[edgeKey{obj, relation}]
@@ -121,10 +123,13 @@ func (s *MemoryStore) ReadTuples(_ context.Context, obj model.Entity, relation s
 	for sub := range subjects {
 		out = append(out, model.RelationTuple{Object: obj, Relation: relation, Subject: sub})
 	}
+	if s.log.Enabled(logger.LevelDebug) {
+		s.log.Debug(ctx, "tag_4pvvsw", "tuples read", "object", obj, "relation", relation, "count", len(out))
+	}
 	return out, nil
 }
 
-func (s *MemoryStore) ReadTuplesBySubject(_ context.Context, sub model.Entity, relation string) ([]model.RelationTuple, error) {
+func (s *MemoryStore) ReadTuplesBySubject(ctx context.Context, sub model.Entity, relation string) ([]model.RelationTuple, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	objects := s.reverse[edgeKey{sub, relation}]
@@ -132,19 +137,26 @@ func (s *MemoryStore) ReadTuplesBySubject(_ context.Context, sub model.Entity, r
 	for obj := range objects {
 		out = append(out, model.RelationTuple{Object: obj, Relation: relation, Subject: sub})
 	}
+	if s.log.Enabled(logger.LevelDebug) {
+		s.log.Debug(ctx, "tag_acf1ao", "tuples read by subject", "subject", sub, "relation", relation, "count", len(out))
+	}
 	return out, nil
 }
 
-func (s *MemoryStore) ForEachTuple(_ context.Context, fn func(model.RelationTuple) error) error {
+func (s *MemoryStore) ForEachTuple(ctx context.Context, fn func(model.RelationTuple) error) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	n := 0
 	for k, subjects := range s.forward {
 		for sub := range subjects {
 			if err := fn(model.RelationTuple{Object: k.entity, Relation: k.relation, Subject: sub}); err != nil {
+				s.log.Debug(ctx, "tag_e8fpbw", "tuple scan stopped", "tuples", n, "err", err)
 				return err
 			}
+			n++
 		}
 	}
+	s.log.Debug(ctx, "tag_1c99se", "tuple scan done", "tuples", n)
 	return nil
 }
 

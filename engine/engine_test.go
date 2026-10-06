@@ -335,6 +335,30 @@ func TestLogsCarryTrace(t *testing.T) {
 	}
 }
 
+func TestDebugTraceAndStats(t *testing.T) {
+	var buf bytes.Buffer
+	e := newTestEngine(t, Config{}, logger.New(&buf, logger.LevelDebug))
+	buf.Reset()
+	if _, err := e.Check(context.Background(), ent("document:readme"), "viewer", ent("user:bob")); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{`msg="following arrow"`, `msg="direct tuple matched"`, "reads=", "depth="} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %q in logs:\n%s", want, out)
+		}
+	}
+
+	buf.Reset()
+	e.log = logger.New(&buf, logger.LevelInfo)
+	if _, err := e.Check(context.Background(), ent("document:readme"), "viewer", ent("user:bob")); err != nil {
+		t.Fatal(err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("info level emitted debug logs:\n%s", buf.String())
+	}
+}
+
 func TestNamespaces(t *testing.T) {
 	ctx := context.Background()
 	e := newTestEngine(t, Config{}, nil)

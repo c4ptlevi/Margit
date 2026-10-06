@@ -60,7 +60,8 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener, cfg Config) error {
 	}
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve(ln) }()
-	s.log.Info(ctx, "tag_g5qhck", "http server listening", "addr", ln.Addr())
+	s.log.Info(ctx, "tag_g5qhck", "http server listening", "addr", ln.Addr(),
+		"read_timeout", cfg.ReadTimeout, "write_timeout", cfg.WriteTimeout, "shutdown_timeout", cfg.ShutdownTimeout)
 
 	select {
 	case err := <-errCh:
@@ -71,14 +72,16 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener, cfg Config) error {
 
 	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Duration(cfg.ShutdownTimeout))
 	defer cancel()
-	s.log.Info(ctx, "tag_xwm3vo", "http server shutting down")
+	start := time.Now()
+	s.log.Info(ctx, "tag_xwm3vo", "http server shutting down", "reason", context.Cause(ctx))
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		s.log.Error(ctx, "tag_g8dc13", "http server shutdown failed", "err", err)
+		s.log.Error(ctx, "tag_g8dc13", "http server shutdown failed", "err", err, "took", time.Since(start))
 		return err
 	}
 	if err := <-errCh; !errors.Is(err, http.ErrServerClosed) {
+		s.log.Error(ctx, "tag_r6u4fj", "http server exited unexpectedly", "err", err)
 		return err
 	}
-	s.log.Info(ctx, "tag_7gd3lb", "http server stopped")
+	s.log.Info(ctx, "tag_7gd3lb", "http server stopped", "took", time.Since(start))
 	return nil
 }

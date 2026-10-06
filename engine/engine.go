@@ -95,16 +95,29 @@ func (e *Engine) SaveNamespace(ctx context.Context, ns model.Namespace) error {
 }
 
 func (e *Engine) GetNamespace(ctx context.Context, name string) (model.Namespace, error) {
-	return e.store.GetNamespace(ctx, name)
+	ns, err := e.store.GetNamespace(ctx, name)
+	if err != nil {
+		e.log.Debug(ctx, "tag_rph6g4", "namespace get failed", "namespace", name, "err", err)
+		return ns, err
+	}
+	e.log.Debug(ctx, "tag_paho09", "namespace fetched", "namespace", name, "relations", len(ns.Relations))
+	return ns, nil
 }
 
 func (e *Engine) ListNamespaces(ctx context.Context) ([]model.Namespace, error) {
-	return e.store.ListNamespaces(ctx)
+	all, err := e.store.ListNamespaces(ctx)
+	if err != nil {
+		e.log.Warn(ctx, "tag_m3b8g9", "namespace list failed", "err", err)
+		return nil, err
+	}
+	e.log.Debug(ctx, "tag_p0mmgz", "namespaces listed", "count", len(all))
+	return all, nil
 }
 
 func (e *Engine) DeleteNamespace(ctx context.Context, name string) error {
 	all, err := e.store.ListNamespaces(ctx)
 	if err != nil {
+		e.log.Warn(ctx, "tag_mhzmbe", "namespace delete failed", "namespace", name, "phase", "list", "err", err)
 		return err
 	}
 	for _, ns := range all {
@@ -181,10 +194,12 @@ func (e *Engine) Check(ctx context.Context, obj model.Entity, relation string, s
 	}
 	ok, err := r.check(ctx, obj, relation, sub, 0)
 	if err != nil {
-		e.log.Warn(ctx, "tag_biw052", "check failed", "object", obj, "relation", relation, "subject", sub, "err", err)
+		e.log.Warn(ctx, "tag_biw052", "check failed", "object", obj, "relation", relation, "subject", sub, "err", err,
+			"reads", r.reads, "depth", r.deepest, "took", time.Since(start))
 		return false, err
 	}
-	e.log.Debug(ctx, "tag_suy0ou", "check done", "object", obj, "relation", relation, "subject", sub, "allowed", ok, "took", time.Since(start))
+	e.log.Debug(ctx, "tag_suy0ou", "check done", "object", obj, "relation", relation, "subject", sub, "allowed", ok,
+		"reads", r.reads, "depth", r.deepest, "cycles", r.cycles, "took", time.Since(start))
 	return ok, nil
 }
 
@@ -201,11 +216,13 @@ func (e *Engine) Expand(ctx context.Context, obj model.Entity, relation string) 
 	}
 	set, err := r.expand(ctx, obj, relation, 0)
 	if err != nil {
-		e.log.Warn(ctx, "tag_flcq0b", "expand failed", "object", obj, "relation", relation, "err", err)
+		e.log.Warn(ctx, "tag_flcq0b", "expand failed", "object", obj, "relation", relation, "err", err,
+			"reads", r.reads, "depth", r.deepest, "took", time.Since(start))
 		return nil, err
 	}
 	out := set.sorted()
-	e.log.Debug(ctx, "tag_bgnsp7", "expand done", "object", obj, "relation", relation, "count", len(out), "took", time.Since(start))
+	e.log.Debug(ctx, "tag_bgnsp7", "expand done", "object", obj, "relation", relation, "count", len(out),
+		"reads", r.reads, "depth", r.deepest, "cycles", r.cycles, "took", time.Since(start))
 	return out, nil
 }
 
@@ -238,7 +255,8 @@ func (e *Engine) Lookup(ctx context.Context, sub model.Entity, relation string, 
 		l.changed = false
 		set, err := l.candidates(ctx, namespace, relation, 0)
 		if err != nil {
-			e.log.Warn(ctx, "tag_kr46bk", "lookup failed", "subject", sub, "relation", relation, "namespace", namespace, "err", err)
+			e.log.Warn(ctx, "tag_kr46bk", "lookup failed", "subject", sub, "relation", relation, "namespace", namespace, "err", err,
+				"phase", "candidates", "passes", passes, "reads", r.reads, "took", time.Since(start))
 			return nil, "", err
 		}
 		if !l.changed {
@@ -246,6 +264,8 @@ func (e *Engine) Lookup(ctx context.Context, sub model.Entity, relation string, 
 			break
 		}
 	}
+	e.log.Debug(ctx, "tag_8wmm57", "lookup candidates collected", "subject", sub, "relation", relation, "namespace", namespace,
+		"passes", passes, "candidates", len(candidates), "reads", r.reads, "took", time.Since(start))
 	var out []model.Entity
 	checked := 0
 	for _, obj := range candidates.sorted() {
@@ -255,7 +275,8 @@ func (e *Engine) Lookup(ctx context.Context, sub model.Entity, relation string, 
 		checked++
 		ok, err := r.check(ctx, obj, relation, sub, 0)
 		if err != nil {
-			e.log.Warn(ctx, "tag_43nxj0", "lookup failed", "subject", sub, "relation", relation, "namespace", namespace, "err", err)
+			e.log.Warn(ctx, "tag_43nxj0", "lookup failed", "subject", sub, "relation", relation, "namespace", namespace, "err", err,
+				"phase", "verify", "object", obj, "checked", checked, "reads", r.reads, "took", time.Since(start))
 			return nil, "", err
 		}
 		if ok {
@@ -272,7 +293,7 @@ func (e *Engine) Lookup(ctx context.Context, sub model.Entity, relation string, 
 	}
 	e.log.Debug(ctx, "tag_ivh9li", "lookup done", "subject", sub, "relation", relation, "namespace", namespace,
 		"after", page.After, "limit", limit, "passes", passes, "candidates", len(candidates), "checked", checked, "count", len(out),
-		"more", next != "", "took", time.Since(start))
+		"more", next != "", "reads", r.reads, "depth", r.deepest, "cycles", r.cycles, "took", time.Since(start))
 	return out, next, nil
 }
 
@@ -285,10 +306,38 @@ type request struct {
 	e          *Engine
 	namespaces map[string]model.Namespace
 	onPath     map[edge]bool
+	debug      bool
+	reads      int
+	deepest    int
+	cycles     int
 }
 
 func (e *Engine) newRequest() *request {
-	return &request{e: e, namespaces: map[string]model.Namespace{}, onPath: map[edge]bool{}}
+	return &request{e: e, namespaces: map[string]model.Namespace{}, onPath: map[edge]bool{}, debug: e.log.Enabled(logger.LevelDebug)}
+}
+
+func (r *request) readTuples(ctx context.Context, obj model.Entity, relation string) ([]model.RelationTuple, error) {
+	r.reads++
+	tuples, err := r.e.store.ReadTuples(ctx, obj, relation)
+	if err != nil {
+		r.e.log.Debug(ctx, "tag_shoyd4", "tuple read failed", "object", obj, "relation", relation, "err", err)
+	}
+	return tuples, err
+}
+
+func (r *request) expr(ctx context.Context, rel model.Relation) (ast.Node, error) {
+	n, err := r.e.exprs.Get(ctx, rel)
+	if err != nil {
+		r.e.log.Error(ctx, "tag_x1smco", "relation expression invalid", "relation", rel.Name, "expr", rel.RelExpr, "err", err)
+	}
+	return n, err
+}
+
+func (r *request) cycle(ctx context.Context, obj model.Entity, relation string, depth int) {
+	r.cycles++
+	if r.debug {
+		r.e.log.Debug(ctx, "tag_8wnwzi", "cycle skipped", "object", obj, "relation", relation, "depth", depth)
+	}
 }
 
 func (r *request) namespace(ctx context.Context, name string) (model.Namespace, error) {
@@ -301,6 +350,7 @@ func (r *request) namespace(ctx context.Context, name string) (model.Namespace, 
 		return model.Namespace{}, fmt.Errorf("%w: %q", model.ErrUnknownNamespace, name)
 	}
 	if err != nil {
+		r.e.log.Warn(ctx, "tag_jruyi6", "namespace load failed", "namespace", name, "err", err)
 		return model.Namespace{}, err
 	}
 	r.namespaces[name] = ns
@@ -323,6 +373,7 @@ func (r *request) resolve(ctx context.Context, namespace, relation string, depth
 		r.e.log.Debug(ctx, "tag_08soiv", "max depth exceeded", "namespace", namespace, "relation", relation, "depth", depth, "max_depth", r.e.maxDepth)
 		return model.Relation{}, false, fmt.Errorf("%w: %s#%s at depth %d", model.ErrMaxDepthExceeded, namespace, relation, depth)
 	}
+	r.deepest = max(r.deepest, depth)
 	rel, err := r.relation(ctx, namespace, relation)
 	if errors.Is(err, model.ErrUnknownNamespace) || errors.Is(err, model.ErrUnknownRelation) {
 		r.e.log.Debug(ctx, "tag_rjiv2g", "missing schema reference treated as empty", "namespace", namespace, "relation", relation)
@@ -337,6 +388,7 @@ func (r *request) resolve(ctx context.Context, namespace, relation string, depth
 func (r *request) check(ctx context.Context, obj model.Entity, relation string, sub model.Entity, depth int) (bool, error) {
 	key := edge{obj, relation}
 	if r.onPath[key] {
+		r.cycle(ctx, obj, relation, depth)
 		return false, nil
 	}
 	rel, found, err := r.resolve(ctx, obj.Namespace, relation, depth)
@@ -347,18 +399,24 @@ func (r *request) check(ctx context.Context, obj model.Entity, relation string, 
 	defer delete(r.onPath, key)
 
 	if rel.IsDirect() {
-		tuples, err := r.e.store.ReadTuples(ctx, obj, relation)
+		tuples, err := r.readTuples(ctx, obj, relation)
 		if err != nil {
 			return false, err
 		}
 		for _, t := range tuples {
 			if t.Subject == sub {
+				if r.debug {
+					r.e.log.Debug(ctx, "tag_83tjj6", "direct tuple matched", "object", obj, "relation", relation, "subject", sub, "depth", depth)
+				}
 				return true, nil
 			}
 		}
+		if r.debug {
+			r.e.log.Debug(ctx, "tag_aauyzz", "direct tuples did not match", "object", obj, "relation", relation, "tuples", len(tuples), "depth", depth)
+		}
 		return false, nil
 	}
-	expr, err := r.e.exprs.Get(ctx, rel)
+	expr, err := r.expr(ctx, rel)
 	if err != nil {
 		return false, err
 	}
@@ -370,9 +428,12 @@ func (r *request) checkExpr(ctx context.Context, obj model.Entity, n ast.Node, s
 	case ast.Computed:
 		return r.check(ctx, obj, n.Relation, sub, depth+1)
 	case ast.Arrow:
-		tuples, err := r.e.store.ReadTuples(ctx, obj, n.Tupleset)
+		tuples, err := r.readTuples(ctx, obj, n.Tupleset)
 		if err != nil {
 			return false, err
+		}
+		if r.debug {
+			r.e.log.Debug(ctx, "tag_gecbhp", "following arrow", "object", obj, "tupleset", n.Tupleset, "relation", n.Relation, "fanout", len(tuples), "depth", depth)
 		}
 		for _, t := range tuples {
 			ok, err := r.check(ctx, t.Subject, n.Relation, sub, depth+1)
@@ -411,6 +472,7 @@ func (r *request) checkExpr(ctx context.Context, obj model.Entity, n ast.Node, s
 func (r *request) expand(ctx context.Context, obj model.Entity, relation string, depth int) (entitySet, error) {
 	key := edge{obj, relation}
 	if r.onPath[key] {
+		r.cycle(ctx, obj, relation, depth)
 		return entitySet{}, nil
 	}
 	rel, found, err := r.resolve(ctx, obj.Namespace, relation, depth)
@@ -421,7 +483,7 @@ func (r *request) expand(ctx context.Context, obj model.Entity, relation string,
 	defer delete(r.onPath, key)
 
 	if rel.IsDirect() {
-		tuples, err := r.e.store.ReadTuples(ctx, obj, relation)
+		tuples, err := r.readTuples(ctx, obj, relation)
 		if err != nil {
 			return nil, err
 		}
@@ -429,9 +491,12 @@ func (r *request) expand(ctx context.Context, obj model.Entity, relation string,
 		for _, t := range tuples {
 			out.add(t.Subject)
 		}
+		if r.debug {
+			r.e.log.Debug(ctx, "tag_pje60m", "direct subjects expanded", "object", obj, "relation", relation, "count", len(out), "depth", depth)
+		}
 		return out, nil
 	}
-	expr, err := r.e.exprs.Get(ctx, rel)
+	expr, err := r.expr(ctx, rel)
 	if err != nil {
 		return nil, err
 	}
@@ -443,9 +508,12 @@ func (r *request) expandExpr(ctx context.Context, obj model.Entity, n ast.Node, 
 	case ast.Computed:
 		return r.expand(ctx, obj, n.Relation, depth+1)
 	case ast.Arrow:
-		tuples, err := r.e.store.ReadTuples(ctx, obj, n.Tupleset)
+		tuples, err := r.readTuples(ctx, obj, n.Tupleset)
 		if err != nil {
 			return nil, err
+		}
+		if r.debug {
+			r.e.log.Debug(ctx, "tag_v8qkk6", "expanding arrow", "object", obj, "tupleset", n.Tupleset, "relation", n.Relation, "fanout", len(tuples), "depth", depth)
 		}
 		out := entitySet{}
 		for _, t := range tuples {
@@ -511,6 +579,7 @@ type lookup struct {
 func (l *lookup) candidates(ctx context.Context, namespace, relation string, depth int) (entitySet, error) {
 	key := nsRel{namespace, relation}
 	if l.active[key] {
+		l.cycles++
 		return l.memo[key], nil
 	}
 	rel, found, err := l.resolve(ctx, namespace, relation, depth)
@@ -525,7 +594,7 @@ func (l *lookup) candidates(ctx context.Context, namespace, relation string, dep
 		got, err = l.objectsOf(ctx, l.sub, relation, namespace)
 	} else {
 		var expr ast.Node
-		expr, err = l.e.exprs.Get(ctx, rel)
+		expr, err = l.expr(ctx, rel)
 		if err == nil {
 			got, err = l.candidatesExpr(ctx, namespace, expr, depth)
 		}
@@ -539,11 +608,18 @@ func (l *lookup) candidates(ctx context.Context, namespace, relation string, dep
 		memo = entitySet{}
 		l.memo[key] = memo
 	}
+	added := 0
 	for e := range got {
 		if !memo.has(e) {
 			memo.add(e)
-			l.changed = true
+			added++
 		}
+	}
+	if added > 0 {
+		l.changed = true
+	}
+	if l.debug {
+		l.e.log.Debug(ctx, "tag_xkf07r", "lookup candidates", "namespace", namespace, "relation", relation, "depth", depth, "found", len(got), "added", added, "total", len(memo))
 	}
 	return memo, nil
 }
@@ -603,8 +679,10 @@ func (l *lookup) candidatesExpr(ctx context.Context, namespace string, n ast.Nod
 }
 
 func (l *lookup) objectsOf(ctx context.Context, sub model.Entity, relation, namespace string) (entitySet, error) {
+	l.reads++
 	tuples, err := l.e.store.ReadTuplesBySubject(ctx, sub, relation)
 	if err != nil {
+		l.e.log.Debug(ctx, "tag_f09e06", "tuple read by subject failed", "subject", sub, "relation", relation, "err", err)
 		return nil, err
 	}
 	out := entitySet{}

@@ -46,7 +46,7 @@ func run() int {
 	}
 	defer closeStore()
 
-	var eng engine.ReBACEngine = engine.New(st, &engine.MemExprCache{}, cfg.Engine, log)
+	var eng engine.ReBACEngine = engine.New(st, &engine.MemExprCache{Log: log}, cfg.Engine, log)
 	if cfg.Engine.Cache.TTLMillis > 0 {
 		eng = engine.NewCached(eng, engine.NewMemResponseCache(ctx, cfg.Engine.Cache, log), log)
 	}
@@ -54,6 +54,7 @@ func run() int {
 		"cache_ttl_ms", cfg.Engine.Cache.TTLMillis, "cache_max_entries", cfg.Engine.Cache.MaxEntries)
 
 	if err := api.New(eng, log).Run(ctx, cfg.Server); err != nil {
+		log.Error(ctx, "tag_x5ba4a", "margit exiting", "err", err)
 		return 1
 	}
 	log.Info(ctx, "tag_a8l7og", "margit stopped")

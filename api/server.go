@@ -79,13 +79,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r = r.WithContext(ctx)
 	w.Header().Set(TraceHeader, id)
 	rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-	s.log.Info(ctx, "tag_9dg7na", "request started", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr)
+	s.log.Info(ctx, "tag_9dg7na", "request started", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr,
+		"bytes", r.ContentLength, "agent", r.UserAgent())
 
 	defer func() {
 		if p := recover(); p != nil {
 			s.log.Error(ctx, "tag_wasvgo", "panic in handler", "panic", p, "stack", string(debug.Stack()))
 			if !rec.wrote {
-				writeJSON(rec, http.StatusInternalServerError, errorBody{Error: "internal error", TraceID: id})
+				s.writeJSON(rec, r, http.StatusInternalServerError, errorBody{Error: "internal error", TraceID: id})
 			}
 		}
 		took := time.Since(start)
@@ -99,8 +100,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.mux.ServeHTTP(rec, r)
 }
 
-func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+func (s *Server) health(w http.ResponseWriter, r *http.Request) {
+	s.writeJSON(w, r, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (s *Server) saveNamespace(w http.ResponseWriter, r *http.Request) {
@@ -108,6 +109,7 @@ func (s *Server) saveNamespace(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &body) {
 		return
 	}
+	s.log.Debug(r.Context(), "tag_84hh1s", "save namespace", "namespace", r.PathValue("name"), "relations", len(body.Relations))
 	if err := s.engine.SaveNamespace(r.Context(), body.toModel(r.PathValue("name"))); err != nil {
 		s.fail(w, r, err)
 		return
@@ -116,12 +118,13 @@ func (s *Server) saveNamespace(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getNamespace(w http.ResponseWriter, r *http.Request) {
+	s.log.Debug(r.Context(), "tag_efu0n9", "get namespace", "namespace", r.PathValue("name"))
 	ns, err := s.engine.GetNamespace(r.Context(), r.PathValue("name"))
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, namespaceFromModel(ns))
+	s.writeJSON(w, r, http.StatusOK, namespaceFromModel(ns))
 }
 
 func (s *Server) listNamespaces(w http.ResponseWriter, r *http.Request) {
@@ -134,10 +137,11 @@ func (s *Server) listNamespaces(w http.ResponseWriter, r *http.Request) {
 	for i, ns := range all {
 		out.Namespaces[i] = namespaceFromModel(ns)
 	}
-	writeJSON(w, http.StatusOK, out)
+	s.writeJSON(w, r, http.StatusOK, out)
 }
 
 func (s *Server) deleteNamespace(w http.ResponseWriter, r *http.Request) {
+	s.log.Debug(r.Context(), "tag_rlkr6s", "delete namespace", "namespace", r.PathValue("name"))
 	if err := s.engine.DeleteNamespace(r.Context(), r.PathValue("name")); err != nil {
 		s.fail(w, r, err)
 		return
@@ -150,6 +154,7 @@ func (s *Server) writeTuples(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &body) {
 		return
 	}
+	s.log.Debug(r.Context(), "tag_nvcz6x", "write tuples", "count", len(body.Tuples))
 	if err := s.engine.WriteTuples(r.Context(), body.toModel()); err != nil {
 		s.fail(w, r, err)
 		return
@@ -162,6 +167,7 @@ func (s *Server) deleteTuples(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &body) {
 		return
 	}
+	s.log.Debug(r.Context(), "tag_y9la7q", "delete tuples", "count", len(body.Tuples))
 	if err := s.engine.DeleteTuples(r.Context(), body.toModel()); err != nil {
 		s.fail(w, r, err)
 		return
@@ -179,13 +185,14 @@ func (s *Server) check(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t := body.toModel()
+	s.log.Debug(ctx, "tag_7xpdmo", "check", "object", t.Object, "relation", t.Relation, "subject", t.Subject, "consistency", body.Consistency)
 	allowed, err := s.engine.Check(ctx, t.Object, t.Relation, t.Subject)
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
 	s.metrics.checkResult(allowed)
-	writeJSON(w, http.StatusOK, checkResponse{Allowed: allowed})
+	s.writeJSON(w, r, http.StatusOK, checkResponse{Allowed: allowed})
 }
 
 func (s *Server) expand(w http.ResponseWriter, r *http.Request) {
@@ -197,12 +204,13 @@ func (s *Server) expand(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.log.Debug(ctx, "tag_kx992n", "expand", "object", body.Object, "relation", body.Relation, "consistency", body.Consistency)
 	subjects, err := s.engine.Expand(ctx, parseEntity(body.Object), body.Relation)
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, expandResponse{Subjects: entityStrings(subjects)})
+	s.writeJSON(w, r, http.StatusOK, expandResponse{Subjects: entityStrings(subjects)})
 }
 
 func (s *Server) lookup(w http.ResponseWriter, r *http.Request) {
@@ -214,13 +222,15 @@ func (s *Server) lookup(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.log.Debug(ctx, "tag_lv8kcg", "lookup", "subject", body.Subject, "relation", body.Relation, "namespace", body.Namespace,
+		"cursor", body.Cursor, "limit", body.Limit, "consistency", body.Consistency)
 	objects, next, err := s.engine.Lookup(ctx, parseEntity(body.Subject), body.Relation, body.Namespace,
 		engine.Page{After: body.Cursor, Limit: body.Limit})
 	if err != nil {
 		s.fail(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, lookupResponse{Objects: entityStrings(objects), NextCursor: next})
+	s.writeJSON(w, r, http.StatusOK, lookupResponse{Objects: entityStrings(objects), NextCursor: next})
 }
 
 func (s *Server) consistency(w http.ResponseWriter, r *http.Request, c engine.Consistency) (context.Context, bool) {
@@ -228,6 +238,7 @@ func (s *Server) consistency(w http.ResponseWriter, r *http.Request, c engine.Co
 	case "", engine.MinimizeLatency, engine.FullyConsistent:
 		return engine.WithConsistency(r.Context(), c), true
 	}
+	s.log.Debug(r.Context(), "tag_05x39z", "invalid consistency", "consistency", c)
 	s.fail(w, r, badRequestError{fmt.Errorf("consistency must be %q or %q", engine.MinimizeLatency, engine.FullyConsistent)})
 	return nil, false
 }
@@ -275,20 +286,22 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 	status := statusFor(err)
 	msg := err.Error()
 	if status >= http.StatusInternalServerError {
-		s.log.Error(ctx, "tag_ddx87w", "request failed", "status", status, "err", err)
+		s.log.Error(ctx, "tag_ddx87w", "request failed", "method", r.Method, "path", r.URL.Path, "status", status, "err", err)
 		if status == http.StatusInternalServerError {
 			msg = "internal error"
 		}
 	} else {
-		s.log.Debug(ctx, "tag_tfnzrn", "request rejected", "status", status, "err", err)
+		s.log.Debug(ctx, "tag_tfnzrn", "request rejected", "method", r.Method, "path", r.URL.Path, "status", status, "err", err)
 	}
-	writeJSON(w, status, errorBody{Error: msg, TraceID: logger.TraceID(ctx)})
+	s.writeJSON(w, r, status, errorBody{Error: msg, TraceID: logger.TraceID(ctx)})
 }
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
+func (s *Server) writeJSON(w http.ResponseWriter, r *http.Request, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		s.log.Warn(r.Context(), "tag_y0diih", "response write failed", "method", r.Method, "path", r.URL.Path, "status", status, "err", err)
+	}
 }
 
 func parseEntity(s string) model.Entity {

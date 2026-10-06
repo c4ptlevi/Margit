@@ -142,6 +142,7 @@ func (s *PostgresStore) GetNamespace(ctx context.Context, name string) (model.Na
 	var rels []byte
 	err := s.pool.QueryRow(ctx, `SELECT relations FROM namespaces WHERE name = $1`, name).Scan(&rels)
 	if errors.Is(err, pgx.ErrNoRows) {
+		s.log.Debug(ctx, "tag_knvodq", "namespace not found", "namespace", name)
 		return model.Namespace{}, fmt.Errorf("%w: namespace %q", model.ErrNotFound, name)
 	}
 	if err != nil {
@@ -172,7 +173,11 @@ func (s *PostgresStore) ListNamespaces(ctx context.Context) ([]model.Namespace, 
 		}
 		out = append(out, ns)
 	}
-	return out, s.fail(ctx, "tag_fvk7u9", "ListNamespaces", rows.Err())
+	if err := rows.Err(); err != nil {
+		return nil, s.fail(ctx, "tag_fvk7u9", "ListNamespaces", err)
+	}
+	s.log.Debug(ctx, "tag_j7jpuu", "namespaces listed", "count", len(out))
+	return out, nil
 }
 
 func (s *PostgresStore) DeleteNamespace(ctx context.Context, name string) error {
@@ -271,7 +276,9 @@ func (s *PostgresStore) ReadTuples(ctx context.Context, obj model.Entity, relati
 	if err != nil {
 		return nil, s.fail(ctx, "tag_2ry90h", "ReadTuples", err)
 	}
-	s.log.Debug(ctx, "tag_fwrp91", "tuples read", "object", obj, "relation", relation, "count", len(out), "took", time.Since(start))
+	if s.log.Enabled(logger.LevelDebug) {
+		s.log.Debug(ctx, "tag_fwrp91", "tuples read", "object", obj, "relation", relation, "count", len(out), "took", time.Since(start))
+	}
 	return out, nil
 }
 
@@ -295,11 +302,15 @@ func (s *PostgresStore) ReadTuplesBySubject(ctx context.Context, sub model.Entit
 	if err != nil {
 		return nil, s.fail(ctx, "tag_n8vklh", "ReadTuplesBySubject", err)
 	}
-	s.log.Debug(ctx, "tag_v72ama", "tuples read by subject", "subject", sub, "relation", relation, "count", len(out), "took", time.Since(start))
+	if s.log.Enabled(logger.LevelDebug) {
+		s.log.Debug(ctx, "tag_v72ama", "tuples read by subject", "subject", sub, "relation", relation, "count", len(out), "took", time.Since(start))
+	}
 	return out, nil
 }
 
 func (s *PostgresStore) ForEachTuple(ctx context.Context, fn func(model.RelationTuple) error) error {
+	start := time.Now()
+	n := 0
 	rows, err := s.pool.Query(ctx, `
 		SELECT object_ns, object_id, relation, subject_ns, subject_id FROM relation_tuples`)
 	if err != nil {
@@ -312,10 +323,16 @@ func (s *PostgresStore) ForEachTuple(ctx context.Context, fn func(model.Relation
 			return s.fail(ctx, "tag_te63ro", "ForEachTuple", err)
 		}
 		if err := fn(t); err != nil {
+			s.log.Debug(ctx, "tag_5wqcas", "tuple scan stopped", "tuples", n, "err", err)
 			return err
 		}
+		n++
 	}
-	return s.fail(ctx, "tag_1u0ows", "ForEachTuple", rows.Err())
+	if err := rows.Err(); err != nil {
+		return s.fail(ctx, "tag_1u0ows", "ForEachTuple", err)
+	}
+	s.log.Debug(ctx, "tag_xuusu8", "tuple scan done", "tuples", n, "took", time.Since(start))
+	return nil
 }
 
 func decodeNamespace(name string, rels []byte) (model.Namespace, error) {
