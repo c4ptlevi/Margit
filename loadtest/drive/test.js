@@ -319,7 +319,7 @@ export function handleSummary(data) {
   const g = (k, s) => (data.metrics[k] ? data.metrics[k].values[s] : undefined);
   const footer = [
     `cache=${CACHE} deep_negative=${DEEP_NEGATIVE} check_rps=${CHECK_RPS} write_rps=${WRITE_RPS} duration=${DURATION}`,
-    `http_reqs=${g("http_reqs", "count")} rate=${num(g("http_reqs", "rate"))}/s failed=${num((g("http_req_failed", "rate") || 0) * 100)}% dropped=${g("dropped_iterations", "count") || 0} correct=${num((g("correct", "rate") || 0) * 100)}%`,
+    `http_reqs=${g("http_reqs", "count")} rate=${num(g("http_reqs", "rate"))}/s failed=${num((g("http_req_failed", "rate") || 0) * 100)}% p95=${num(g("http_req_duration", "p(95)"))}ms p99=${num(g("http_req_duration", "p(99)"))}ms dropped=${g("dropped_iterations", "count") || 0} correct=${num((g("correct", "rate") || 0) * 100)}%`,
   ];
   const text = [`\nMargit drive load test (${RUN}) latency ms`, head, ...lines, "", ...footer, ""].join("\n");
   return {
