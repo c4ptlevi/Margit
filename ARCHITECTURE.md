@@ -12,7 +12,7 @@ flowchart LR
     subgraph proc[margit process]
         main[main.go<br/>wiring + signals]
         cfg[config<br/>config.json + env]
-        api[api<br/>routes, JSON, trace id,<br/>request logs, panic recovery]
+        api[api<br/>routes, JSON, trace id,<br/>request logs, metrics, panic recovery]
         eng[engine<br/>validate, Check / Expand / Lookup]
         cache[ExprCache<br/>parsed expressions]
         ast[ast<br/>expression parser]
@@ -254,6 +254,31 @@ query. `bloom_expected: 0` disables the filter.
 - **pkg**: derived from the caller via `runtime.Caller`.
 - Each line is formatted outside the lock and written with a single locked write, so lines never
   tear.
+
+## Metrics and dashboards
+
+`GET /metrics` exposes Prometheus metrics. It is served before the trace/logging middleware, so
+scrapes don't produce log lines. Each `Server` has its own registry.
+
+| Metric | Labels |
+|---|---|
+| `margit_http_requests_total` | `method`, `route` (mux pattern, e.g. `/v1/namespaces/{name}`; `unmatched` otherwise), `status` |
+| `margit_http_request_duration_seconds` | `method`, `route` (histogram, 100 µs – 10 s buckets) |
+| `margit_http_requests_in_flight` | — |
+| `margit_check_results_total` | `allowed` |
+| `go_*`, `process_*` | Go runtime and process (CPU, RSS) |
+
+Routes use the pattern rather than the raw path, so label cardinality stays fixed.
+
+```mermaid
+flowchart LR
+    M[margit :8080<br/>/metrics] -->|scrape 5s| P[Prometheus :9090]
+    P --> G[Grafana :3000<br/>Margit dashboard]
+```
+
+The compose stack provisions the Prometheus data source and the `Margit` dashboard
+(`docker/grafana/dashboards/margit.json`). Panels cover traffic, errors, check decisions, latency
+percentiles and CPU/memory against the 1 CPU / 1 GiB container budget.
 
 ## Known limitations
 

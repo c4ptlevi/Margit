@@ -32,10 +32,16 @@ Set `"store": {"type": "postgres"}` in the config file (or a copy passed with `-
 ```powershell
 docker compose up -d --build
 docker compose logs -f margit
-docker compose down        # add -v to drop the Postgres volume
+docker compose down        # add -v to drop the Postgres, Prometheus and Grafana volumes
 ```
 
-Starts margit on `localhost:8080` backed by a Postgres container. The margit container is limited to
+Starts margit on `localhost:8080` backed by a Postgres container, plus Prometheus
+(`localhost:9090`, scrapes `/metrics` every 5s) and Grafana (`localhost:3000`, admin/admin;
+anonymous users can view). Grafana opens on the provisioned **Margit** dashboard: request rate by
+route and status, errors, check decisions, p50/p95/p99 latency, and CPU/memory against the
+container budget.
+
+The margit container is limited to
 1 CPU and 1 GiB memory (no swap), with `GOMAXPROCS=1` and `GOMEMLIMIT=900MiB` so the Go runtime stays
 inside that budget. The image uses `docker/config.json`, driven by environment variables:
 
@@ -106,6 +112,7 @@ Entities are written as `namespace:id`. Request bodies are JSON (max 1 MB, unkno
 | Method | Path | Body | Response |
 |---|---|---|---|
 | GET | `/healthz` | — | `200 {"status":"ok"}` |
+| GET | `/metrics` | — | Prometheus text format (not logged) |
 | GET | `/v1/namespaces` | — | `200 {"namespaces":[{"name","relations"}]}` |
 | GET | `/v1/namespaces/{name}` | — | `200 {"name","relations"}` |
 | PUT | `/v1/namespaces/{name}` | `{"relations":{...}}` | `204` |
@@ -177,4 +184,4 @@ $env:MARGIT_PG_DSN = '...'; go test -count=1 -p 1 ./...        # also run store/
 | `logger/` | Leveled logger, trace ids |
 | `config/` | Config file loading |
 | `cmd/tagger/` | Log tag filler/checker |
-| `Dockerfile`, `docker-compose.yml`, `docker/` | Container image, compose stack, container config |
+| `Dockerfile`, `docker-compose.yml`, `docker/` | Container image, compose stack, container config, Prometheus/Grafana provisioning |
