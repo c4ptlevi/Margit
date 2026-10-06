@@ -73,30 +73,7 @@ same dataset can be run with a cache that fits or one that does not:
 | `PG_EFFECTIVE_CACHE_SIZE` | `256MB` | planner hint |
 | `PG_MEM_LIMIT` | `384m` | Postgres container memory limit (includes its page cache) |
 
-### Load test (k6)
-
-```powershell
-docker compose run --rm k6                              # peak 1000 check/s
-docker compose run --rm -e PEAK_CHECK_RPS=2000 k6       # push harder
-```
-
-`loadtest/margit.js` seeds 1,000 users, 50 groups and 2,000 docs (~5,200 tuples), then ramps
-open-model arrival rates over ~2 min: checks to `PEAK_CHECK_RPS`, writes and expands at 1/20 of it,
-lookups at 1/100 (page size `LOOKUP_LIMIT`, default 20). Thresholds: <1% errors, check p95 <100 ms /
-p99 <250 ms. Watch the Grafana dashboard while it runs.
-
-Result on the 1 CPU / 1 GiB container with Postgres (default settings, 1,110 req/s peak, 0 errors,
-no dropped iterations, ~30 MiB RSS):
-
-| | Unpaginated lookup | Lookup `limit: 20` |
-|---|---|---|
-| Check p95 / p99 | 13.7 / 39.6 ms | 4.2 / 14.1 ms |
-| Write p95 | 11.3 ms | 5.0 ms |
-| Expand p95 | 14.6 ms | 5.0 ms |
-| Lookup p95 / p99 | 215 / 498 ms | 42 / 102 ms |
-| Margit CPU at peak | 0.96 core | 0.93 core |
-
-### Drive load test (large dataset, depths, cold vs hot)
+### Load test (k6, Drive dataset)
 
 `loadtest/drive/` models a Google-Drive-like tenant hierarchy. `dataset.js` holds the schema and
 deterministic formulas, so the seeder and the test agree on every expected answer without storing
@@ -116,43 +93,97 @@ root → 4 folders → 16 folders → 128 files with owners, viewer users/groups
 banned editor-group member on every 8th file; 200 folder chains per depth 1–48 plus 80-deep chains;
 200 nested group chains per depth 1–32; chains whose root viewer is an 8-deep group chain.
 
+#### Reusable runs: profiles + `run.ps1`
+
+A run is fully described by a profile in `loadtest/profiles/*.json`; `loadtest/drive/traffic.js` executes any
+profile and `loadtest/run.ps1` makes the result reproducible:
+
 ```powershell
-docker compose run --rm k6 run /scripts/drive/seed.js          # ~60 s, ~77k tuples/s
-docker compose run --rm -e CACHE=cold k6 run /scripts/drive/test.js
-docker compose run --rm -e CACHE=hot  k6 run /scripts/drive/test.js
+.\loadtest\run.ps1 -Profile smoke                     # 15 s, every kind, answers must be 100% correct
+.\loadtest\run.ps1 -Profile realistic                 # verify the profile's rps against its SLOs
+.\loadtest\run.ps1 -Profile realistic -Rps 50,100,150 # sweep; one report per rate + summary table
+.\loadtest\run.ps1 -Profile checks-only -Duration 60s -Warm
+.\loadtest\run.ps1 -Profile .\loadtest\profiles\my.json -Reseed
+.\loadtest\run.ps1 -Profile read-deep -FindMax -Warm -Ramp 15s -Duration 45s  # max rate with check p95 < 50 ms
+.\loadtest\run.ps1 -Profile realistic -FindMax -Warm -CacheTtlMs 5000          # same, with the response cache on
+.\loadtest\run.ps1 -Profile realistic -FindMax -Warm -QueryCacheTtlMs 5000     # same, with the SQL query cache on
 ```
 
-`CACHE=cold` draws uniformly from all workspaces and chains; `CACHE=hot` from 4 workspaces and 2 chains
-per depth. Each iteration picks one of 47 check kinds (direct, group, role, role group, org admin, org
-group, inherited, banned, outsider, share, folder chain/nested group/mixed by depth, too-deep → 422) or
-13 write flows (write → check → delete → check). Every answer is compared with the expected value
-(`correct` must be 100%). Knobs: `CHECK_RPS` (150), `WRITE_RPS` (10), `DURATION` (60s),
-`FOLDER_NEG_MAX` (8), `DEEP_NEGATIVE=1` to include deeper negative folder-chain checks. A per kind/depth
-table is printed and written to `loadtest/results/`.
+`run.ps1` applies `resources` (margit CPUs/memory/GOMAXPROCS/GOMEMLIMIT, Postgres shared_buffers/
+effective_cache_size/memory) through compose env and recreates changed containers, checks the dataset
+(≥ 4,573,820 tuples and the 6 namespaces; otherwise runs the idempotent seeder), cold-starts Postgres
+(restart + drop OS page cache) when `cold_start` is true, resets `pg_stat_*`, runs k6 at each rate, then
+pulls margit/Postgres CPU and memory, connections, TPS, statements/s, mean statement time and server
+p95 from Prometheus over the hold window, plus the buffer hit ratio. It writes
+`loadtest/results/<profile>-<rps>-<stamp>.{md,json,txt,k6.json}` and `<profile>-<stamp>-summary.md`
+(git commit, config, per-op and per-kind×depth latencies, resources, PASS/FAIL) and exits 1 if any SLO
+is breached. `-Warm` skips the cold start, `-NoUp` leaves the stack untouched. `-FindMax` starts at the
+profile `rps` (or `-Rps`), doubles or halves until it brackets the limit, then bisects to within 5% (min `-Step`, cap
+`-MaxRps`); a rate passes when check p95 < `slo.check.p95_ms` (or `-CheckP95Ms`, default 50) with ≤ 1% errors,
+≤ 0.5% dropped iterations and ≥ 99.9% correct answers; other ops do not gate. k6 alone:
+`docker compose run --rm -e PROFILE=/scripts/profiles/realistic.json -e RPS=80 k6 run /scripts/drive/traffic.js`.
 
-Results (150 checks/s + 10 write flows/s = 190 req/s, 0 errors, 0 dropped, 100% correct; margit
-~0.7 core, Postgres ~0.8 core):
+| Profile | Purpose |
+|---|---|
+| `smoke` | 20 it/s for 15 s over every kind; stack + dataset + correctness check |
+| `realistic` | Zipf popularity, 88% check / 3% lookup / 3% expand / 6% write flows; SLO check p95 < 50 ms |
+| `read-shallow` | checks only, file-level kinds (1–5 hops: direct, group, role, org, workspace inheritance) |
+| `checks-only` | realistic check kind mix (file-level + some chains), checks only |
+| `read-deep` | checks only on folder chains 8–48, nested groups 8–32, chain→group chains, some denied |
+| `read-write` | realistic without Lookup: 91% check, 3% expand, 6% write flows |
+| `write-heavy` | 50% checks, 50% write flows over all write kinds |
+| `depth-matrix` | every check kind and depth (1–48), uniform popularity, cold; latency per kind × depth |
+| `hot-set` | realistic mix on 4 workspaces / 2 chains per depth / 100 users (fully cached) |
+| `heavy` | lookups and expands only at 5 it/s |
 
-| p95 ms | cold (64 MB buffers) | cold (16 MB buffers, 128 MB container) | hot |
-|---|---|---|---|
-| Buffer cache hit ratio | 99.31% | 98.85% | 99.99% |
-| `file_owner_direct` / `share_owner` | 2.5 | 2.5 | 1.9 |
-| `file_l2_group` / `file_root_editor_group` | 8.7 | 8.3 | 6.7 |
-| `file_org_admin` / `file_outsider` (depth 4–5) | 28 | 28 | 25 |
-| `chain_owner` d=8 / 16 / 32 / 48 | 5.2 / 8.6 / 13.1 / 19.6 | 5.1 / 8.5 / 13.0 / 18.4 | 4.4 / 7.2 / 12.7 / 17.4 |
-| `nested_group` d=8 / 16 / 32 | 4.7 / 7.3 / 12.4 | 4.6 / 6.7 / 13.5 | 4.5 / 6.7 / 11.9 |
-| `chain_outsider` d=4 / 8 | 23 / 78 | 21 / 77 | 21 / 72 |
-| `chain_too_deep` d=80 (422) | 24 | 22 | 23 |
-| write flows (4 requests) | 3–25 | 3–22 | 3–21 |
+Profile fields (all optional except `mix`/`kinds`):
+
+| Field | Meaning |
+|---|---|
+| `rps`, `ramp`, `duration` | target iterations/s (open model, `ramping-arrival-rate`), ramp-up, hold; `RPS`/`DURATION` env and `-Rps`/`-Duration` override |
+| `vus`, `max_vus`, `lookup_limit`, `cold_start` | k6 VU pool, Lookup `limit`, cold start before each run |
+| `resources` | `margit: {cpus, memory, gomaxprocs, gomemlimit, cache_ttl_ms, cache_max_entries, query_cache_ttl_ms, query_cache_max_entries}`, `postgres: {shared_buffers, effective_cache_size, memory}`; `-CacheTtlMs` / `-QueryCacheTtlMs` override the TTLs and reports are tagged `<profile>[-cache<ttl>ms][-qcache<ttl>ms]` |
+| `popularity` | `workspaces`, `chains`, `users`: `{"dist": "uniform"}`, `{"dist": "zipf", "s": 1.0}` or `{"dist": "hot", "count": 4}` |
+| `mix` | weights of `check`, `lookup`, `expand`, `write` |
+| `kinds` | per op, weights of request kinds (below); unknown names fail fast |
+| `depths` | weights per depth for `folder_chain`, `folder_chain_denied`, `expand_folder_chain` (1,2,4,8,16,32,48), `group_chain` (1–32), `folder_then_group` (4,16,32) |
+| `slo` | `check`/`lookup`/`expand`/`write`: `{p95_ms, p99_ms}`; `correct_rate`, `error_rate`, `max_dropped` → k6 thresholds |
+
+Kinds:
+
+- check: `file_view_l2_group`, `file_view_direct`, `file_edit_owner`, `file_edit_team`, `file_edit_role`,
+  `file_view_l1`, `file_view_role`, `file_view_role_group`, `file_view_org_admin`, `file_view_org_group`,
+  `file_share`, `file_share_denied`, `file_banned`, `file_outsider`, `cross_workspace` (answer not asserted),
+  `folder_chain`, `folder_chain_denied`, `group_chain`, `group_chain_denied`, `folder_then_group`, `too_deep` (422)
+- lookup: `lookup_my_files`, `lookup_team_files`, `lookup_my_groups`, `lookup_owner_folders`, `lookup_outsider`
+- expand: `expand_file_viewers`, `expand_folder_viewers`, `expand_group_chain`, `expand_folder_chain`
+- write (write → check → delete flow; the check is reported as `probe`): `write_create_file`, `write_share`,
+  `write_join_group`, `write_role_assign`, `write_join_group_chain`, `write_file_in_chain`
+
+Every answer is compared with the value derived from `dataset.js` (`correct` rate). Keep this dataset the only
+data in the database: putting a different schema for `group` etc. silently changes every answer.
+
+#### Results
+
+Max it/s with check p95 < 50 ms (margit 1 CPU / 1 GiB, warm, 5 s cache TTLs). Full method, per-profile
+CPU, hit ratios and latencies are in [`loadtest/RESULTS.md`](loadtest/RESULTS.md).
+
+| Profile | baseline | response cache | query cache | both caches |
+|---|---:|---:|---:|---:|
+| `read-shallow` | 226 | 188 | 1,062 | 1,094 |
+| `checks-only` | 169 | 244 | 581 | 938 |
+| `read-deep` | < 10 | < 10 | 469 | 1,300 |
+| `read-write` | 232 | 250 | 775 | 775 |
+| `write-heavy` | 244 | 253 | 488 | 394 |
+| `realistic` | 106 | 125 | 338 | 338 |
 
 Findings:
 
-- Capacity at p95 < 50 ms (cold, margit 1 CPU): **~300 req/s** for the Drive mix (240 checks/s + 16 write
-  flows/s; 2-min run p95 44.8 ms, p99 105 ms, 0 errors). margit reaches ~0.9 core and Postgres ~1.1 cores. At
-  255 checks/s p95 is 64 ms; at 270 checks/s margit hits 1 core and p95 jumps to 405 ms. The simple
-    `margit.js` mix (1–2 hop docs) on the same 4.6M-tuple database, measured server-side over the 40 s
-    plateau: 750 req/s → p95 4.5 ms (0.84 core); 900 → 21 ms; 1,011 → 47 ms (0.96 core, knee); 1,066 → 54 ms.
-    Lookup alone crosses 50 ms p95 at ~750 req/s (48.5 ms) and reaches 458 ms at 1,011.
+- The SQL query cache gives 2–4.7× capacity on every profile (80–83% of store reads served from memory,
+  98.7% on deep hierarchies). The response cache alone hits only 1–2% of randomized checks, so its column is
+  within the ~±15–20% run-to-run variance; it helps only when exact questions repeat (`read-deep`, both caches).
+- Without caches, `realistic` tops out at ~106 it/s, limited by Lookup (p95 ~1.1 s) and ~35 SQL statements
+  per request; with the query cache margit's single core becomes the limit.
 - Latency is dominated by sequential SQL round trips, not I/O: ~25 `SELECT`s per check at ~46 µs
   server time each. Cold vs hot differs by 5–15%; even a 16 MB buffer pool keeps a 98.9% hit ratio
   because B-tree inner pages stay cached (and the WSL vhdx is cached by the host).
@@ -160,7 +191,8 @@ Findings:
 - Negative checks on folder chains grow ~O(d³): `viewer`, `editor` and `owner` each recurse through
   `parent`, and Check has no per-request memoization. Isolated: d=8 → 209 SQL reads / 77 ms,
   d=16 → 1,130 / 0.3 s, d=32 → 7,114 / 1.9 s, d=48 → 22,049 / 5.6 s; under load d=48 exceeded the 30 s
-  write timeout. Memoizing `(object, relation, subject)` per request would make this linear.
+  write timeout. Memoizing `(object, relation, subject)` per request would make this linear; the query cache
+  already hides most of it (98.7% hits on `read-deep`, 469 it/s instead of < 10).
 
 ## Configuration
 
@@ -173,9 +205,13 @@ Findings:
 | `store.postgres.dsn` | — | Postgres connection string |
 | `store.postgres.bloom_expected` | `1000000` | Expected keys in the bloom filter; `0` disables it |
 | `store.postgres.bloom_fp_rate` | `0.01` | Target bloom false-positive rate |
+| `store.query_cache.ttl_ms` | `0` | TTL of cached store reads (tuples by object/subject, namespaces); `0` disables the cache |
+| `store.query_cache.max_entries` | `1000000` | Query cache size bound (same eviction as the response cache) |
 | `engine.max_depth` | `25` | Max relation nesting depth per evaluation |
 | `engine.lookup_default_limit` | `100` | Lookup page size when the request omits `limit` |
 | `engine.lookup_max_limit` | `1000` | Upper bound on lookup `limit` (larger values are capped) |
+| `engine.response_cache.ttl_ms` | `0` | TTL of cached Check/Expand/Lookup responses; `0` disables the cache |
+| `engine.response_cache.max_entries` | `1000000` | Cache size bound; when full, expired entries and then ~1/8 of a shard are evicted |
 | `server.addr` | `:8080` | Listen address |
 | `server.read_timeout` / `write_timeout` | `10s` / `30s` | HTTP timeouts |
 | `server.shutdown_timeout` | `15s` | Time allowed for in-flight requests on shutdown |
@@ -230,9 +266,32 @@ Entities are written as `namespace:id`. Request bodies are JSON (max 1 MB, unkno
 | DELETE | `/v1/namespaces/{name}` | — | `204`; `409` if another namespace uses it as a subject type |
 | POST | `/v1/tuples` | `{"tuples":[{"object","relation","subject"}]}` | `204` (all-or-nothing validation) |
 | POST | `/v1/tuples/delete` | same as above | `204` |
-| POST | `/v1/check` | `{"object","relation","subject"}` | `200 {"allowed":bool}` |
-| POST | `/v1/expand` | `{"object","relation"}` | `200 {"subjects":[...]}` |
-| POST | `/v1/lookup` | `{"subject","relation","namespace","limit"?,"cursor"?}` | `200 {"objects":[...],"next_cursor"?}`; pass `next_cursor` back as `cursor` for the next page (absent on the last page) |
+| POST | `/v1/check` | `{"object","relation","subject","consistency"?}` | `200 {"allowed":bool}` |
+| POST | `/v1/expand` | `{"object","relation","consistency"?}` | `200 {"subjects":[...]}` |
+| POST | `/v1/lookup` | `{"subject","relation","namespace","limit"?,"cursor"?,"consistency"?}` | `200 {"objects":[...],"next_cursor"?}`; pass `next_cursor` back as `cursor` for the next page (absent on the last page) |
+
+### Caches and consistency
+
+With `engine.response_cache.ttl_ms > 0`, Check, Expand and Lookup responses are cached in memory
+(`engine.ResponseCache` interface, in-memory sharded implementation `MemResponseCache`). Tuple writes and
+deletes do **not** invalidate entries, so a read may be up to `ttl_ms` stale; namespace saves and deletes
+clear the whole cache. Errors are never cached. Per request, `consistency` selects the trade-off:
+
+| `consistency` | Behaviour |
+|---|---|
+| omitted / `minimize_latency` | serve from the cache when present (≤ `ttl_ms` stale) |
+| `full` | skip the cache lookup, evaluate against the store and refresh the entry (use right after a write) |
+
+With `store.query_cache.ttl_ms > 0`, the store reads that evaluation repeats on every step (tuples by
+object + relation, tuples by subject, namespaces) are cached under `store.CachedStore`. Because entries
+are graph edges, not whole answers, many different requests share them. Local tuple writes and deletes
+invalidate the affected keys right away, and namespace changes clear the whole cache. Writes from other
+instances, and a read racing a write, are bounded by `ttl_ms`. `consistency: "full"` bypasses this cache
+too.
+
+Any other `consistency` value returns 400. Metrics: `margit_cache_hits_total`, `margit_cache_misses_total`,
+`margit_cache_bypasses_total` (`full` reads) and `margit_cache_entries`, labelled `cache="response"` or
+`cache="query"`. The Grafana dashboard has a *Caches* row.
 
 Errors return `{"error": "...", "trace_id": "..."}`:
 
@@ -269,6 +328,19 @@ One line per event on stdout:
 - **tag**: unique per call site. Search the code for it to find the line that logged it.
 - **pkg**: the Go package that logged the line.
 
+What gets logged at each level:
+
+- **info**: startup config, store/pool setup, bloom loading progress, server start/stop, one `request started` /
+  `request finished` pair per request (status, `took`), namespace saves and deletes.
+- **warn**: rejected writes/schemas, failed reads/writes, requests slower than 1 s (`slow request`), failed
+  response writes.
+- **error**: 5xx responses, Postgres errors, panics (with stack), invalid stored relation expressions.
+- **debug**: request parameters per handler; `check done` / `expand done` / `lookup done` with `reads` (store
+  reads), `depth` (deepest level reached), `cycles` and `took`; the evaluation trace (`following arrow`,
+  `direct tuple matched`, `lookup candidates`, `cycle skipped`, `max depth exceeded`); every tuple read with
+  its timing; bloom misses; cache hit/miss/bypass. Trace lines are skipped entirely above debug, so they
+  cost nothing in production. Set `log_level` to `debug` and filter by `trace=` to follow one request.
+
 When adding a log call, write `"0000"` as the tag; `build.ps1` / `go generate` (via `cmd/tagger`) replaces it
 with a unique `tag_xxxxxx`. `tagger -check` fails the build on missing or duplicate tags.
 
@@ -287,8 +359,9 @@ $env:MARGIT_PG_DSN = '...'; go test -count=1 -p 1 ./...        # also run store/
 |---|---|
 | `main.go` | Load config, open store, build engine, run HTTP server |
 | `api/` | HTTP handlers, wire types, server lifecycle |
-| `engine/` | Check / Expand / Lookup evaluation |
-| `store/` | `Store` interface; memory and Postgres implementations |
+| `engine/` | Check / Expand / Lookup evaluation; `CachedEngine` response cache |
+| `store/` | `Store` interface; memory and Postgres implementations; `CachedStore` query cache |
+| `cache/` | TTL cache interface and sharded in-memory implementation shared by both caches |
 | `model/` | Entities, namespaces, relations, tuples, validation, errors |
 | `ast/` | Relation expression lexer and parser |
 | `bloom/` | Bloom filter used by the Postgres store |
@@ -296,4 +369,4 @@ $env:MARGIT_PG_DSN = '...'; go test -count=1 -p 1 ./...        # also run store/
 | `config/` | Config file loading |
 | `cmd/tagger/` | Log tag filler/checker |
 | `Dockerfile`, `docker-compose.yml`, `docker/` | Container image, compose stack, container config, Prometheus/Grafana provisioning |
-| `loadtest/` | k6 load tests: `margit.js` (quick), `drive/` (large Drive-like dataset, depths, cold/hot) |
+| `loadtest/` | `drive/` dataset, seeder and profile-driven k6 script; `profiles/*.json`; `run.ps1` reproducible runner; `RESULTS.md` published results; `results/` (ignored) |

@@ -13,6 +13,8 @@ flowchart LR
         main[main.go<br/>wiring + signals]
         cfg[config<br/>config.json + env]
         api[api<br/>routes, JSON, trace id,<br/>request logs, metrics, panic recovery]
+        rc[CachedEngine<br/>response cache, TTL]
+        qc[CachedStore<br/>query cache, TTL]
         eng[engine<br/>validate, Check / Expand / Lookup]
         cache[ExprCache<br/>parsed expressions]
         ast[ast<br/>expression parser]
@@ -29,24 +31,25 @@ flowchart LR
     client -->|JSON| api
     main --> cfg
     main --> api
-    main --> eng
+    main --> rc
+    main --> qc
     main -->|store.Open| st
-    api --> eng
+    api --> rc -->|miss / full| eng
     eng --> cache --> ast
     eng --> model
-    eng --> st
+    eng --> qc -->|miss / full| st
     st -.-> mem
     st -.-> pg
     pg --> bloom
     pg --> db
-    api & eng & mem & pg -.-> log
+    api & rc & eng & qc & mem & pg -.-> log
 
     classDef ext fill:#fff3cd,stroke:#d39e00,color:#000
     classDef core fill:#d1e7dd,stroke:#198754,color:#000
     classDef storage fill:#cfe2ff,stroke:#0d6efd,color:#000
     class client,db ext
-    class api,eng,cache,ast,model core
-    class st,mem,pg,bloom storage
+    class api,rc,eng,cache,ast,model core
+    class st,qc,mem,pg,bloom storage
 ```
 
 Dependencies point downward only: `api → engine → store → model → ast`. `config` imports the
@@ -55,8 +58,9 @@ config structs of `api`, `engine` and `store`, so those packages never import `c
 | Package | Responsibility |
 |---|---|
 | `api` | HTTP routing, request decoding (1 MB, strict fields), error → status mapping, trace id, start/finish logs |
-| `engine` | Validation policy and graph evaluation; per-request namespace memo and cycle tracking |
-| `store` | Persistence behind one interface; memory (maps + RWMutex) or Postgres (pgx pool + bloom filter) |
+| `engine` | Validation policy and graph evaluation; per-request namespace memo and cycle tracking; optional `CachedEngine` decorator over a `ResponseCache` |
+| `store` | Persistence behind one interface; memory (maps + RWMutex) or Postgres (pgx pool + bloom filter); optional `CachedStore` query cache decorator |
+| `cache` | Generic TTL cache interface, sharded in-memory implementation, hit/miss counters, bypass context |
 | `model` | `Entity`, `Namespace`, `Relation`, `RelationTuple`, schema/tuple validation, `model.Error` enum |
 | `ast` | Lexer and parser for relation expressions |
 | `logger` | Leveled line logger; tag, package and trace id on every line |
@@ -248,6 +252,90 @@ sequenceDiagram
 Deletes leave keys in the filter (bloom filters cannot remove entries); that only costs an extra
 query. `bloom_expected: 0` disables the filter.
 
+## Response cache
+
+`main` wraps the engine in `engine.CachedEngine` when `engine.response_cache.ttl_ms > 0`. The decorator
+implements `ReBACEngine`, so `api` is unaware of it, and depends only on the `ResponseCache` interface
+(`Get`/`Set`/`Clear`/`Len`, all taking `ctx`); `MemResponseCache` is the in-memory implementation: 64
+shards keyed by `maphash`, each a map + mutex, entries carry an expiry, and a full shard first drops
+expired entries and then ~1/8 of its entries.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as api
+    participant C as CachedEngine
+    participant R as ResponseCache
+    participant E as Engine
+
+    A->>C: Check(ctx{consistency}, obj, rel, sub)
+    alt consistency = full
+        C->>E: Check (bypass, counted)
+        E-->>C: allowed
+        C->>R: Set(key, allowed, now+ttl)
+    else minimize_latency (default)
+        C->>R: Get("c|obj|rel|sub")
+        alt fresh hit
+            R-->>C: allowed
+        else miss / expired
+            C->>E: Check
+            E-->>C: allowed (errors are not cached)
+            C->>R: Set
+        end
+    end
+    C-->>A: allowed
+    Note over C,R: SaveNamespace / DeleteNamespace clear the cache, tuple writes do not (staleness ≤ ttl)
+```
+
+Keys: `c|object|relation|subject`, `e|object|relation`, `l|subject|relation|namespace|after|limit`.
+Cached slices are shared between callers, which only read them.
+
+Both caches use package `cache`: the `cache.Cache` interface (`Get`/`Set`/`Delete`/`Clear`/`Len`), the
+sharded `cache.Mem` implementation, `cache.Counters` for stats and `cache.WithBypass(ctx)`, which
+`consistency: "full"` sets so that every cache layer skips `Get` but still refreshes the entry.
+
+## Query cache
+
+`main` wraps the store in `store.CachedStore` when `store.query_cache.ttl_ms > 0`. It is a `Store`
+decorator, so the engine is unaware of it. It caches the read methods the engine calls on every
+evaluation step; everything else passes through.
+
+| Method | Key | Invalidated by |
+|---|---|---|
+| `ReadTuples(obj, rel)` | `o|ns|id|rel` | a local write/delete of a tuple with that object and relation |
+| `ReadTuplesBySubject(sub, rel)` | `s|ns|id|rel` | a local write/delete of a tuple with that subject and subject relation |
+| `GetNamespace(name)` | `n|name` | any namespace save/delete (clears the cache) |
+| `NamespaceExists`, `RelationExists` | `ne|name`, `re|ns|rel` | any namespace save/delete (clears the cache) |
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant E as Engine
+    participant Q as CachedStore
+    participant C as cache.Mem
+    participant S as PostgresStore
+
+    E->>Q: ReadTuples(ctx, doc:1, viewer)
+    Q->>C: Get("o|doc|1|viewer")
+    alt fresh hit and not bypassed
+        C-->>Q: tuples
+    else miss / expired / consistency=full
+        Q->>S: ReadTuples
+        S-->>Q: tuples (errors are not cached)
+        Q->>C: Set
+    end
+    Q-->>E: tuples
+    E->>Q: WriteTuples(ctx, [doc:1#viewer@user:bob])
+    Q->>S: WriteTuples
+    Q->>C: Delete("o|doc|1|viewer"), Delete("s|user|bob|")
+```
+
+The query cache works at a finer grain than the response cache. One cached tuple list serves every
+check that passes through that node of the graph, so different requests share entries and the hit ratio
+is much higher. A local write is visible to the next read. A read that misses and is still in flight
+when a write lands can store the pre-write rows after the invalidation, and writes made by other
+instances are not seen; both are bounded by `ttl_ms`.
+
 ## Logging and tracing
 
 ```
@@ -261,7 +349,12 @@ query. `bloom_expected: 0` disables the filter.
   `tagger -check` fails on missing or duplicate tags.
 - **pkg**: derived from the caller via `runtime.Caller`.
 - Each line is formatted outside the lock and written with a single locked write, so lines never
-  tear.
+  tear. Values are formatted with `strconv`/`String()`/`Error()` (fmt only for other types).
+- Recursive evaluation (`check`, `expand`, `candidates`) logs its trace only when
+  `Logger.Enabled(LevelDebug)`, checked once per request, because variadic arguments allocate even when
+  the level is off. Each request counts store reads, deepest depth and cycle skips and reports them on
+  the `check done` / `expand done` / `lookup done` line (or the failure line).
+- Requests taking ≥ 1 s also log a `slow request` warning.
 
 ## Metrics and dashboards
 
@@ -274,6 +367,7 @@ scrapes don't produce log lines. Each `Server` has its own registry.
 | `margit_http_request_duration_seconds` | `method`, `route` (histogram, 100 µs – 10 s buckets) |
 | `margit_http_requests_in_flight` | — |
 | `margit_check_results_total` | `allowed` |
+| `margit_cache_hits_total`, `margit_cache_misses_total`, `margit_cache_bypasses_total`, `margit_cache_entries` | `cache` (`response`, `query`; only the caches that are on) |
 | `go_*`, `process_*` | Go runtime and process (CPU, RSS) |
 
 Routes use the pattern rather than the raw path, so label cardinality stays fixed.
@@ -293,14 +387,14 @@ percentiles and CPU/memory against the 1 CPU / 1 GiB container budget. A Contain
 memory per compose service from cAdvisor (relabelled to `service`). A Postgres row shows
 connections, transactions/s, buffer cache hit ratio, block reads, DB size, and statements/s and mean
 execution time per SQL statement (a custom exporter query over `pg_stat_statements`, labelled by
-normalized query text).
+normalized query text). A Caches row shows hit ratio, hits/misses/bypasses per second and entries per cache (`response`, `query`).
 
 ## Known limitations
 
 | Area | Limitation |
 |---|---|
 | Multiple instances | Each process has its own bloom filter; writes from another instance are not added to it, so it can wrongly deny. Run one writer, or disable the filter (`bloom_expected: 0`). |
-| Consistency | No snapshot tokens ("zookies"); a read sees whatever the store has committed. |
+| Consistency | No snapshot tokens ("zookies"); a read sees whatever the store has committed. With the response cache on, default reads may be up to `ttl_ms` stale after a tuple write; use `consistency: "full"`. With the query cache on, local writes are visible immediately (apart from a read racing the write), but writes from other instances are seen only after `ttl_ms`. Each instance has its own caches. |
 | Schema changes | Updating a namespace does not check whether other namespaces' arrows still resolve; missing references evaluate as empty. Deleting a namespace keeps its tuples. |
 | Lookup cost | The candidate pass grows with fixpoint passes and candidate count and runs in full on every page; no pagination on Expand. |
 | Deep negative checks | Check has no per-request memo of `(object, relation, subject)`. Schemas where several relations each recurse through `parent` (Drive `viewer`/`editor`/`owner`) re-walk the chain, so negative checks cost ~O(d³) reads: 1,130 at d=16, 22,049 at d=48 (5.6 s). Positive checks short-circuit and stay linear. |
