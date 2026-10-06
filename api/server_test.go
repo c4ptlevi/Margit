@@ -112,6 +112,41 @@ func TestEndToEnd(t *testing.T) {
 	mustStatus(t, ts, "GET", "/healthz", "", 200)
 }
 
+func TestNamespaceEndpoints(t *testing.T) {
+	ts := newTestServer(t, nil)
+	seed(t, ts)
+
+	var got namespaceResponse
+	json.Unmarshal(mustStatus(t, ts, "GET", "/v1/namespaces/document", "", 200), &got)
+	if got.Name != "document" || got.Relations["viewer"].Expr != "(owner + viewer_group->member) - banned" ||
+		!slices.Equal(got.Relations["owner"].Types, []string{"user"}) {
+		t.Fatalf("get document = %+v", got)
+	}
+
+	var list namespacesResponse
+	json.Unmarshal(mustStatus(t, ts, "GET", "/v1/namespaces", "", 200), &list)
+	var names []string
+	for _, n := range list.Namespaces {
+		names = append(names, n.Name)
+	}
+	if !slices.Equal(names, []string{"document", "group", "user"}) {
+		t.Fatalf("list = %v", names)
+	}
+
+	mustStatus(t, ts, "GET", "/v1/namespaces/nope", "", 404)
+	mustStatus(t, ts, "DELETE", "/v1/namespaces/user", "", 409)
+	mustStatus(t, ts, "DELETE", "/v1/namespaces/document", "", 204)
+	mustStatus(t, ts, "DELETE", "/v1/namespaces/document", "", 404)
+	mustStatus(t, ts, "GET", "/v1/namespaces/document", "", 404)
+	mustStatus(t, ts, "DELETE", "/v1/namespaces/group", "", 204)
+	mustStatus(t, ts, "DELETE", "/v1/namespaces/user", "", 204)
+
+	b := mustStatus(t, ts, "GET", "/v1/namespaces", "", 200)
+	if !bytes.Contains(b, []byte(`"namespaces":[]`)) {
+		t.Fatalf("empty list = %s, want empty array", b)
+	}
+}
+
 func TestErrors(t *testing.T) {
 	ts := newTestServer(t, nil)
 	seed(t, ts)
@@ -149,6 +184,7 @@ func TestStatusFor(t *testing.T) {
 	cases := map[error]int{
 		model.ErrNotFound:         404,
 		model.ErrMaxDepthExceeded: 422,
+		model.ErrNamespaceInUse:   409,
 		model.ErrUnknownRelation:  400,
 		context.DeadlineExceeded:  504,
 		context.Canceled:          499,

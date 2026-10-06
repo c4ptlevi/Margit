@@ -274,3 +274,46 @@ func TestLogsCarryTrace(t *testing.T) {
 		t.Fatalf("logs = %q", out)
 	}
 }
+
+func TestNamespaces(t *testing.T) {
+	ctx := context.Background()
+	e := newTestEngine(t, Config{}, nil)
+
+	got, err := e.GetNamespace(ctx, "group")
+	if err != nil || got.Relations["member"].AllowedTypes[0] != "user" {
+		t.Fatalf("GetNamespace(group) = %+v, %v", got, err)
+	}
+	if _, err := e.GetNamespace(ctx, "nope"); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("GetNamespace(nope) err = %v, want ErrNotFound", err)
+	}
+
+	all, err := e.ListNamespaces(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var listed []string
+	for _, n := range all {
+		listed = append(listed, n.Name)
+	}
+	if !slices.Equal(listed, []string{"document", "folder", "group", "user"}) {
+		t.Fatalf("ListNamespaces = %v", listed)
+	}
+
+	for _, name := range []string{"user", "group", "folder"} {
+		if err := e.DeleteNamespace(ctx, name); !errors.Is(err, model.ErrNamespaceInUse) {
+			t.Errorf("DeleteNamespace(%s) err = %v, want ErrNamespaceInUse", name, err)
+		}
+	}
+	if err := e.DeleteNamespace(ctx, "document"); err != nil {
+		t.Fatalf("DeleteNamespace(document) = %v", err)
+	}
+	if _, err := e.GetNamespace(ctx, "document"); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("deleted namespace still readable: %v", err)
+	}
+	if err := e.DeleteNamespace(ctx, "document"); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("second delete err = %v, want ErrNotFound", err)
+	}
+	if _, err := e.Check(ctx, ent("document:readme"), "viewer", ent("user:alice")); err == nil {
+		t.Fatal("check on deleted namespace succeeded")
+	}
+}

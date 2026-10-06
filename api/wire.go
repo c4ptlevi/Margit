@@ -19,6 +19,23 @@ func (b namespaceBody) toModel(name string) model.Namespace {
 	return model.Namespace{Name: name, Relations: rels}
 }
 
+type namespaceResponse struct {
+	Name      string                  `json:"name"`
+	Relations map[string]relationBody `json:"relations"`
+}
+
+type namespacesResponse struct {
+	Namespaces []namespaceResponse `json:"namespaces"`
+}
+
+func namespaceFromModel(ns model.Namespace) namespaceResponse {
+	rels := make(map[string]relationBody, len(ns.Relations))
+	for name, r := range ns.Relations {
+		rels[name] = relationBody{Types: r.AllowedTypes, Expr: r.RelExpr}
+	}
+	return namespaceResponse{Name: ns.Name, Relations: rels}
+}
+
 type tupleBody struct {
 	Object   string `json:"object"`
 	Relation string `json:"relation"`

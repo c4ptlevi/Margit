@@ -18,6 +18,7 @@ const (
 	ErrRelationNotDirect
 	ErrSubjectTypeNotAllowed
 	ErrMaxDepthExceeded
+	ErrNamespaceInUse
 )
 
 var errorText = map[Error]string{
@@ -36,6 +37,7 @@ var errorText = map[Error]string{
 	ErrRelationNotDirect:     "relation is not direct",
 	ErrSubjectTypeNotAllowed: "subject type not allowed",
 	ErrMaxDepthExceeded:      "max evaluation depth exceeded",
+	ErrNamespaceInUse:        "namespace is referenced by another namespace",
 }
 
 func (e Error) Error() string {

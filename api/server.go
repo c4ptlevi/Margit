@@ -28,7 +28,10 @@ type Server struct {
 func New(eng engine.ReBACEngine, log *logger.Logger) *Server {
 	s := &Server{engine: eng, log: log, mux: http.NewServeMux()}
 	s.mux.HandleFunc("GET /healthz", s.health)
+	s.mux.HandleFunc("GET /v1/namespaces", s.listNamespaces)
+	s.mux.HandleFunc("GET /v1/namespaces/{name}", s.getNamespace)
 	s.mux.HandleFunc("PUT /v1/namespaces/{name}", s.saveNamespace)
+	s.mux.HandleFunc("DELETE /v1/namespaces/{name}", s.deleteNamespace)
 	s.mux.HandleFunc("POST /v1/tuples", s.writeTuples)
 	s.mux.HandleFunc("POST /v1/tuples/delete", s.deleteTuples)
 	s.mux.HandleFunc("POST /v1/check", s.check)
@@ -88,6 +91,36 @@ func (s *Server) saveNamespace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.engine.SaveNamespace(r.Context(), body.toModel(r.PathValue("name"))); err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) getNamespace(w http.ResponseWriter, r *http.Request) {
+	ns, err := s.engine.GetNamespace(r.Context(), r.PathValue("name"))
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, namespaceFromModel(ns))
+}
+
+func (s *Server) listNamespaces(w http.ResponseWriter, r *http.Request) {
+	all, err := s.engine.ListNamespaces(r.Context())
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	out := namespacesResponse{Namespaces: make([]namespaceResponse, len(all))}
+	for i, ns := range all {
+		out.Namespaces[i] = namespaceFromModel(ns)
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) deleteNamespace(w http.ResponseWriter, r *http.Request) {
+	if err := s.engine.DeleteNamespace(r.Context(), r.PathValue("name")); err != nil {
 		s.fail(w, r, err)
 		return
 	}
@@ -184,6 +217,8 @@ func statusFor(err error) int {
 			return http.StatusNotFound
 		case model.ErrMaxDepthExceeded:
 			return http.StatusUnprocessableEntity
+		case model.ErrNamespaceInUse:
+			return http.StatusConflict
 		}
 		return http.StatusBadRequest
 	case errors.Is(err, context.DeadlineExceeded):

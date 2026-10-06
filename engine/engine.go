@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/c4ptlevi/margit/ast"
@@ -16,6 +17,9 @@ const DefaultMaxDepth = 25
 
 type ReBACEngine interface {
 	SaveNamespace(ctx context.Context, ns model.Namespace) error
+	GetNamespace(ctx context.Context, name string) (model.Namespace, error)
+	ListNamespaces(ctx context.Context) ([]model.Namespace, error)
+	DeleteNamespace(ctx context.Context, name string) error
 	WriteTuples(ctx context.Context, tuples []model.RelationTuple) error
 	DeleteTuples(ctx context.Context, tuples []model.RelationTuple) error
 	Check(ctx context.Context, obj model.Entity, relation string, sub model.Entity) (bool, error)
@@ -58,6 +62,38 @@ func (e *Engine) SaveNamespace(ctx context.Context, ns model.Namespace) error {
 		return err
 	}
 	e.log.Info(ctx, "tag_5b856o", "namespace saved", "namespace", ns.Name, "relations", len(ns.Relations))
+	return nil
+}
+
+func (e *Engine) GetNamespace(ctx context.Context, name string) (model.Namespace, error) {
+	return e.store.GetNamespace(ctx, name)
+}
+
+func (e *Engine) ListNamespaces(ctx context.Context) ([]model.Namespace, error) {
+	return e.store.ListNamespaces(ctx)
+}
+
+func (e *Engine) DeleteNamespace(ctx context.Context, name string) error {
+	all, err := e.store.ListNamespaces(ctx)
+	if err != nil {
+		return err
+	}
+	for _, ns := range all {
+		if ns.Name == name {
+			continue
+		}
+		for _, r := range ns.Relations {
+			if slices.Contains(r.AllowedTypes, name) {
+				err := fmt.Errorf("%w: %s used by %s#%s", model.ErrNamespaceInUse, name, ns.Name, r.Name)
+				e.log.Warn(ctx, "tag_jx6zju", "namespace delete rejected", "namespace", name, "err", err)
+				return err
+			}
+		}
+	}
+	if err := e.store.DeleteNamespace(ctx, name); err != nil {
+		return err
+	}
+	e.log.Info(ctx, "tag_1wwt03", "namespace deleted", "namespace", name)
 	return nil
 }
 

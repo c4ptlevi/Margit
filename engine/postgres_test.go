@@ -40,4 +40,5 @@ func TestEnginePostgres(t *testing.T) {
 	t.Run("expand", TestExpand)
 	t.Run("lookup", TestLookup)
 	t.Run("write validation", TestWriteValidation)
+	t.Run("namespaces", TestNamespaces)
 }
