@@ -11,7 +11,8 @@ param(
     [double]$CheckP95Ms,
     [string]$Ramp,
     [int]$CacheTtlMs = -1,
-    [int]$QueryCacheTtlMs = -1
+    [int]$QueryCacheTtlMs = -1,
+    [long]$BloomExpected = -1
 )
 
 $ErrorActionPreference = "Continue"
@@ -84,12 +85,15 @@ $env:MARGIT_QUERY_CACHE_MAX_ENTRIES = if ($r.margit.query_cache_max_entries) { "
 $tag = $profileName
 if ($cacheTtl -gt 0) { $tag += "-cache$($cacheTtl)ms" }
 if ($queryCacheTtl -gt 0) { $tag += "-qcache$($queryCacheTtl)ms" }
+$bloom = if ($BloomExpected -ge 0) { $BloomExpected } elseif ($null -ne $r.margit.bloom_expected) { [long]$r.margit.bloom_expected } else { 12000000 }
+$env:MARGIT_BLOOM_EXPECTED = "$bloom"
+if ($bloom -eq 0) { $tag += "-nobloom" }
 $env:PG_SHARED_BUFFERS = "$($r.postgres.shared_buffers)"
 $env:PG_EFFECTIVE_CACHE_SIZE = "$($r.postgres.effective_cache_size)"
 $env:PG_MEM_LIMIT = "$($r.postgres.memory)"
 
 if (-not $NoUp) {
-    Write-Host "==> compose up (margit $($env:MARGIT_CPUS) CPU / $($env:MARGIT_MEM), response cache ttl $cacheTtl ms, query cache ttl $queryCacheTtl ms, postgres buffers $($env:PG_SHARED_BUFFERS) / $($env:PG_MEM_LIMIT))"
+    Write-Host "==> compose up (margit $($env:MARGIT_CPUS) CPU / $($env:MARGIT_MEM), response cache ttl $cacheTtl ms, query cache ttl $queryCacheTtl ms, bloom expected $bloom, postgres buffers $($env:PG_SHARED_BUFFERS) / $($env:PG_MEM_LIMIT))"
     docker compose up -d --wait 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "docker compose up failed" }
 }
@@ -161,7 +165,7 @@ function Invoke-Run([int]$rate) {
     if (-not $pass) { $failed = $true }
     $report = [ordered]@{
         run = $runId; profile = $profileName; commit = $commit; rps_target = $rate; hold = $hold; cold_start = $cold
-        cache_ttl_ms = $cacheTtl; query_cache_ttl_ms = $queryCacheTtl; resources = $cfg.resources; dataset_tuples = $count; result = if ($pass) { "PASS" } else { "FAIL" }
+        cache_ttl_ms = $cacheTtl; query_cache_ttl_ms = $queryCacheTtl; bloom_expected = $bloom; resources = $cfg.resources; dataset_tuples = $count; result = if ($pass) { "PASS" } else { "FAIL" }
         breached = @($k6.breached); k6_exit = $k6Exit; ops = $k6.ops; total = $k6.total; resources_observed = $res
     }
     $report | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 (Join-Path $results "$runId.json")
@@ -171,7 +175,7 @@ function Invoke-Run([int]$rate) {
         "- profile: ``$profileName`` ($($cfg.description))",
         "- commit: ``$commit``, dataset: $count tuples, cold start: $cold",
         "- target: $rate it/s, ramp $ramp, hold $hold",
-        "- margit: $($r.margit.cpus) CPU / $($r.margit.memory), response cache ttl $cacheTtl ms, query cache ttl $queryCacheTtl ms; postgres: shared_buffers $($r.postgres.shared_buffers), limit $($r.postgres.memory)",
+        "- margit: $($r.margit.cpus) CPU / $($r.margit.memory), response cache ttl $cacheTtl ms, query cache ttl $queryCacheTtl ms, bloom expected $bloom; postgres: shared_buffers $($r.postgres.shared_buffers), limit $($r.postgres.memory)",
         "- result: **$($report.result)**$(if (-not $pass) { ' (' + ($k6.breached -join ', ') + ')' })", "",
         "| op | n | p95 ms | p99 ms | SLO |", "|---|---|---|---|---|"
     )
