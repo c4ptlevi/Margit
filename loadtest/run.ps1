@@ -9,7 +9,8 @@ param(
     [int]$MaxRps = 2000,
     [int]$Step = 10,
     [double]$CheckP95Ms,
-    [string]$Ramp
+    [string]$Ramp,
+    [int]$CacheTtlMs = -1
 )
 
 $ErrorActionPreference = "Continue"
