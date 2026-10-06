@@ -1,0 +1,38 @@
+name: margit
+
+services:
+  margit:
+    build: .
+    image: margit:latest
+    ports:
+      - "8080:8080"
+    environment:
+      MARGIT_LOG_LEVEL: info
+      MARGIT_STORE_TYPE: postgres
+      MARGIT_PG_DSN: postgres://margit:margit@postgres:5432/margit?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    cpus: 1
+    mem_limit: 1g
+    memswap_limit: 1g
+    stop_grace_period: 20s
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: margit
+      POSTGRES_PASSWORD: margit
+      POSTGRES_DB: margit
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U margit -d margit"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pgdata:
