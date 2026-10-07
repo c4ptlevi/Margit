@@ -1,5 +1,9 @@
 # Margit
 
+> "Thou seekest passage, Tarnished? Show thy permissions, or go no further."
+>
+> *An authorization-themed nod to Margit, the Fell Omen.*
+
 Margit is a relationship-based access control (ReBAC) service inspired by Google Zanzibar.
 You describe object types and how their relations are computed, store relationship tuples
 such as `document:readme#owner@user:alice`, and ask questions like *"can bob view readme?"*.
